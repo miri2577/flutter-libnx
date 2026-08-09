@@ -27,10 +27,13 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] alle benutzten libnx-Symbole gegen die echten Header verifiziert (24 Stück)
 - [x] **`hello_libnx.nro` kompiliert** – 214 KB, gültiges `NRO0`-Magic, null Warnungen
       bei `-Wall`, sauberer Rebuild reproduziert
-- [ ] startet auf Hardware
-- [ ] Logging (nxlink/Datei) liefert Ausgabe
-- [ ] Controller-Eingabe reagiert
-- [ ] sauberes Beenden über Plus
+- [x] **startet auf echter Hardware** (Switch, Atmosphère, Applet-Modus über Album),
+      übertragen per `nxlink` – Framebuffer zeigt das erwartete Bild
+- [x] **Controller-Eingabe reagiert** (A → gelbe Fläche)
+- [x] Bild wird tatsächlich fortlaufend neu gezeichnet (wandernder Balken)
+- [ ] Logging (nxlink/Datei) liefert Ausgabe – noch nicht gesehen
+- [ ] sauberes Beenden über Plus – noch nicht bestätigt
+- [ ] Framebuffer-Stride gegen `width * 4` geprüft
 
 ## Meilenstein 2 – Engine Cross-Compile PoC
 

@@ -23,14 +23,24 @@ umgestellt, damit die Header, gegen die ich prüfe, denen im Image entsprechen.
 
 ---
 
-## 2026-08-09 – `hello_libnx` baut
+## 2026-08-09 – `hello_libnx` läuft auf echter Hardware
 
 **Befund:** Erster Build ohne Compilerfehler, sauberer Rebuild ohne eine einzige Warnung
-bei `-Wall`. Ergebnis: 214 KB, `NRO0`-Magic an Offset 0x10 vorhanden.
+bei `-Wall`. Ergebnis: 214 KB, `NRO0`-Magic an Offset 0x10 vorhanden. Übertragung per
+`nxlink` auf die Konsole, gestartet aus hbmenu im Applet-Modus. Auf dem Bildschirm
+erscheint das erwartete Bild, der Balken wandert, A färbt die Fläche.
 
-**Konsequenz:** Der Weg Quelltext → `.elf` → `.nro` steht. Was das **nicht** zeigt: ob
-das Ding auf Hardware startet, ob der Framebuffer das erwartete Format hat und ob der
-Stride `width * 4` ist. Das sind Hardwarefragen.
+**Konsequenz:** Die gesamte Kette steht – Quelltext, Container-Toolchain, `.elf`, `.nro`,
+Übertragung, Start, Framebuffer, Eingabe. Damit ist die Plattformschicht, auf der der
+Embedder aufsetzt, kein Papier mehr.
+
+**Zur Übertragung:** `nxlink` aus dem Container braucht `--network host`. Ohne den
+Schalter scheitert der Verbindungsaufbau („Connection to … failed"), obwohl Port 28280
+von Windows aus offen ist – die Docker-NAT verträgt den Netloader-Handshake nicht.
+
+**Noch offen:** Logausgabe wurde noch nicht gesehen, sauberes Beenden über Plus noch nicht
+bestätigt, und der Framebuffer-Stride ist noch nicht gegen `width * 4` geprüft. Genau
+dieser Wert entscheidet später, ob Flutters Zeilenabstand direkt durchgereicht werden kann.
 
 ---
 
