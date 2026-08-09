@@ -1,0 +1,18 @@
+# Referenz-Checkouts und heruntergeladene Upstream-Quellen (nicht versionieren)
+third_party/libnx/
+third_party/reference/
+third_party/engine/
+
+# Build-Artefakte
+build/
+*.nro
+*.nso
+*.elf
+*.nacp
+*.o
+*.d
+
+# Flutter/Dart
+.dart_tool/
+.packages
+examples/**/build/

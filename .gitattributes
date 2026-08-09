@@ -1,0 +1,4 @@
+# Shell-Skripte laufen unter WSL/Linux und brauchen LF, auch auf einem Windows-Checkout.
+*.sh text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf
