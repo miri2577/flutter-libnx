@@ -170,6 +170,35 @@ frühere Annahme: Der signalbasierte Profiler entfällt im Product-Modus tatsäc
 Die übrigen 562 offenen Symbole stammen aus anderen Zielen (`dart::Api::`,
 `dart::BaseTextBuffer::` und Verwandte) und lösen sich beim Zusammenlinken auf.
 
+### Die Dart-Portierung steht
+
+Fünf Dateien, 44 Funktionen, alle Plattformgruppen auf null offene Symbole:
+
+| Datei | Ansatz |
+|---|---|
+| `os_horizon.cc` | POSIX-Zeitfunktionen (`clock_gettime`, `nanosleep`), stdio. Bewusst **ohne** `<switch.h>`, dessen Makros und Typnamen (`u32`, `Result`) mit Dart-Bezeichnern kollidieren. |
+| `os_thread_horizon.cc` | pthreads, eng an der Linux-Fassung |
+| `virtual_memory_horizon.cc` | `memalign` aus dem Prozess-Heap, siehe unten |
+| `cpuinfo_horizon.cc` | kein `/proc/cpuinfo`; `HasField` meldet `false`, worauf `GetCpuModel()` von selbst auf „Unknown" fällt |
+| `native_symbol_horizon.cc` | keine Symbolauflösung zur Laufzeit; alle Anfragen melden „nicht gefunden" |
+
+**Zwei bewusst offen gelassene Lücken**, beide im Code markiert:
+
+`OSThread::GetCurrentStackBounds` liefert `false`. Linux ermittelt die Grenzen über
+`pthread_getattr_np`, das newlib nicht hat; libnx kennt sie zwar, aber der Zugriff würde
+`<switch.h>` in die Dart-VM ziehen. Die VM wertet `false` als „unbekannt" und fällt bei der
+Erkennung von Stapelüberläufen auf konservativere Verfahren zurück. Sollte das zum Problem
+werden, ist das die Stelle.
+
+`OS::GetCurrentThreadCPUMicros` liefert `-1`, weil `CLOCK_THREAD_CPUTIME_ID` fehlt. Die VM
+wertet das als „nicht verfügbar" aus – ein erfundener Wert wäre schlechter als keiner.
+
+**Ein eigener Fehler, der Zeit kostete:** Meine Idempotenzprüfung im Patch-Skript prüfte
+nach dem Fix zuerst den Anker statt das Ergebnis. Beim *Einfügen* bleibt der Anker aber
+stehen, also wurden alle fünf Einträge in `vm_sources.gni` doppelt eingetragen und `gn gen`
+brach ab. Die Prüfung muss zuerst auf das Ergebnis schauen – aber nur, wenn dieses nicht
+leer ist, sonst gilt eine Löschung immer als erledigt. Beide Fälle sind jetzt abgedeckt.
+
 ### Entscheidung zum Speichermodell
 
 `virtual_memory_horizon.cc` nimmt den einfachsten Weg, der die Zusicherungen erfüllt:

@@ -158,13 +158,15 @@ def replace_once(path: str, old: str, new: str, label: str) -> bool:
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
 
-    # Reihenfolge zaehlt: Bei einer leeren Ersetzung waere `new in text` immer
-    # wahr, und der Patch wuerde faelschlich als erledigt gelten.
+    # Zwei Faelle, die sich beissen:
+    #   * Bei einer leeren Ersetzung ist `new in text` immer wahr.
+    #   * Beim Einfuegen bleibt der Anker erhalten, `old in text` also ebenfalls.
+    # Deshalb zuerst auf das Ergebnis pruefen, aber nur wenn es nicht leer ist.
+    if new and new in text:
+        print(f"    schon gepatcht: {label}")
+        return False
     if old not in text:
-        if new and new in text:
-            print(f"    schon gepatcht: {label}")
-        else:
-            print(f"    ANKER NICHT GEFUNDEN in {label}", file=sys.stderr)
+        print(f"    ANKER NICHT GEFUNDEN in {label}", file=sys.stderr)
         return False
 
     with open(path, "w", encoding="utf-8") as handle:
@@ -741,6 +743,46 @@ def patch_dart_version_string(src: str) -> None:
     )
 
 
+def patch_dart_vm_sources(src: str, repo: str) -> None:
+    """Legt die Horizon-Implementierungen ab und traegt sie in die Quellenliste ein.
+
+    Dart listet alle Plattformdateien flach in vm_sources.gni und laesst jede
+    ihren Inhalt selbst hinter #if defined(DART_HOST_OS_...) verbergen. Unsere
+    Dateien folgen demselben Muster und sind auf anderen Plattformen leer.
+    """
+    import shutil
+
+    runtime = os.path.join(src, "flutter", "third_party", "dart", "runtime")
+    files = os.path.join(repo, "patches", "flutter-engine", "files", "dart", "vm")
+
+    names = (
+        "os_horizon.cc",
+        "os_thread_horizon.cc",
+        "virtual_memory_horizon.cc",
+        "cpuinfo_horizon.cc",
+        "native_symbol_horizon.cc",
+    )
+    for name in names:
+        shutil.copyfile(os.path.join(files, name),
+                        os.path.join(runtime, "vm", name))
+        print(f"    kopiert: dart/runtime/vm/{name}")
+
+    gni = os.path.join(runtime, "vm", "vm_sources.gni")
+    for new, anchor in (
+        ("os_horizon.cc", "os_linux.cc"),
+        ("os_thread_horizon.cc", "os_thread_linux.cc"),
+        ("virtual_memory_horizon.cc", "virtual_memory_posix.cc"),
+        ("cpuinfo_horizon.cc", "cpuinfo_linux.cc"),
+        ("native_symbol_horizon.cc", "native_symbol_posix.cc"),
+    ):
+        replace_once(
+            gni,
+            f'  "{anchor}",\n',
+            f'  "{new}",\n  "{anchor}",\n',
+            f"vm_sources.gni ({new})",
+        )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -797,6 +839,9 @@ def main() -> int:
     patch_dart_platform_headers(SRC, repo_root)
     patch_dart_signal_handler(SRC)
     patch_dart_version_string(SRC)
+
+    print("==> Dart-VM: Horizon-Implementierungen")
+    patch_dart_vm_sources(SRC, repo_root)
 
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)

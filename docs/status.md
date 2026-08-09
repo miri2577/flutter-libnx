@@ -81,10 +81,15 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       `dart_runtime_mode=release`) – vorher lief versehentlich Debug/JIT
 - [x] **`libdart_vm_aotruntime_product` übersetzt vollständig** – 675 Ziele, 184
       Objektdateien, keine Fehler
-- [ ] **Dart VM linkt** – dafür fehlen die eigentlichen Implementierungen. Gemessen
-      an den undefinierten Symbolen: **17× `dart::OS::`, 20× `dart::OSThread::`,
-      8× `dart::VirtualMemory::`**, zusammen 45 Funktionen. `ThreadInterrupter`
-      ist bei 0, der Profiler entfällt im Product-Modus also tatsächlich.
+- [x] **Dart-VM-Portierung vollständig** – fünf neue Dateien (`os_horizon.cc`,
+      `os_thread_horizon.cc`, `virtual_memory_horizon.cc`, `cpuinfo_horizon.cc`,
+      `native_symbol_horizon.cc`). Alle Plattformgruppen stehen auf **0** offenen
+      Symbolen: `OS::`, `OSThread::`, `VirtualMemory::`, `CpuInfo`,
+      `NativeSymbolResolver`.
+- [x] Compressed Pointers abgeschaltet (`dart_use_compressed_pointers=false`) –
+      Begründung in `docs/porting-notes.md`
+- [ ] Dart VM **linkt** – Bibliotheken noch offen: `vm/BUILD.gn` verlangt `dl`,
+      das es auf Horizon nicht gibt
 - [ ] Skia (Software) kompiliert
 - [ ] Engine linkt
 
