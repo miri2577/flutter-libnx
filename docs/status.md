@@ -70,7 +70,12 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       `ninja: no work to do` beim zweiten Lauf
 - [x] eigene fml-Plattformquellen für Horizon (`mapping_horizon.cc`,
       `native_library_horizon.cc`)
-- [ ] Dart-VM-Portierungsdateien angelegt
+- [x] libnx-Include-Pfad und Switch-Architekturflags in der Compilerkonfiguration
+      (`-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -ftls-model=local-exec`)
+- [x] Horizon in allen vier OS-Erkennungen von `dart/runtime/platform/globals.h`
+- [ ] **Dart-VM-Portierungsdateien** – vier Header verlangen eine Horizon-Variante:
+      `platform/utils.h`, `platform/threads.h`, `platform/synchronization.h`,
+      `vm/os_thread.h`, dazu die passenden `.cc`-Dateien
 - [ ] Dart VM kompiliert
 - [ ] Skia (Software) kompiliert
 - [ ] Engine linkt

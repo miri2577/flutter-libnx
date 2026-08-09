@@ -188,6 +188,17 @@ def patch_shell_platform(src: str) -> None:
 
 def patch_compiler_config(src: str) -> None:
     path = os.path.join(src, "build", "config", "compiler", "BUILD.gn")
+
+    # devkitpro_root wird weiter unten fuer Include- und Architekturflags
+    # gebraucht.
+    replace_once(
+        path,
+        'import("//build/config/android/config.gni")\n',
+        'import("//build/config/android/config.gni")\n'
+        'import("//build/toolchain/horizon/horizon.gni")\n',
+        "build/config/compiler/BUILD.gn (Import horizon.gni)",
+    )
+
     # devkitPro setzt __SWITCH__ sonst ueber sein Makefile (switch_rules).
     # GN baut nicht darueber, also muessen wir es selbst mitgeben - sonst
     # faellt build_config.h in seinen #error-Zweig und die Dart-VM kann ihr
@@ -204,6 +215,21 @@ def patch_compiler_config(src: str) -> None:
         '      # genau der fuer solche Plattformen vorgesehene Weg\n'
         '      # (source/common/umapfile.h:41-49).\n'
         '      "U_HAVE_MMAP=0",\n'
+        '    ]\n'
+        '\n'
+        '    cflags += [\n'
+        '      # libnx-Header. Sie liegen nicht in newlib: arpa/inet.h,\n'
+        '      # netdb.h, poll.h und die Switch-APIs kommen von hier.\n'
+        '      "-I" + devkitpro_root + "/libnx/include",\n'
+        '\n'
+        '      # Dieselben Architekturflags, die devkitPro in switch_rules\n'
+        '      # setzt. -mtp=soft ist dabei nicht optional: Horizon erlaubt\n'
+        '      # den Zugriff auf das Thread-Pointer-Register nicht direkt.\n'
+        '      "-march=armv8-a+crc+crypto",\n'
+        '      "-mtune=cortex-a57",\n'
+        '      "-mtp=soft",\n'
+        '      "-ftls-model=local-exec",\n'
+        '      "-fPIE",\n'
         '    ]\n'
         '  }\n\n'
         '  if (is_qnx) {\n    defines += [\n      "_XOPEN_SOURCE=700",',
@@ -491,6 +517,98 @@ def patch_absl_elf_mem_image(src: str) -> None:
     )
 
 
+def patch_dart_globals(src: str) -> None:
+    """Traegt Horizon in die vier OS-Erkennungen der Dart-VM ein.
+
+    DART_HOST_OS_* beschreibt das System, auf dem die VM laeuft;
+    DART_TARGET_OS_* das System, fuer das AOT-Code erzeugt wird. Fuer uns ist
+    beides Horizon.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "platform", "globals.h")
+
+    # 1. Host-OS aus dem Compilermakro.
+    replace_once(
+        path,
+        "#elif defined(__Fuchsia__)\n"
+        "#define DART_HOST_OS_FUCHSIA\n"
+        "\n"
+        "#elif !defined(DART_HOST_OS_FUCHSIA)\n"
+        "#error Automatic target os detection failed.",
+        "#elif defined(__Fuchsia__)\n"
+        "#define DART_HOST_OS_FUCHSIA\n"
+        "\n"
+        "#elif defined(__SWITCH__)\n"
+        "// Nintendo Switch / Horizon OS ueber libnx. __SWITCH__ setzt die\n"
+        "// GN-Compilerkonfiguration, nicht der Compiler selbst.\n"
+        "#define DART_HOST_OS_HORIZON 1\n"
+        "\n"
+        "#elif !defined(DART_HOST_OS_FUCHSIA)\n"
+        "#error Automatic target os detection failed.",
+        "dart globals.h (Host-OS)",
+    )
+
+    # 2a. Horizon in die Liste der bereits gesetzten Target-OS aufnehmen.
+    replace_once(
+        path,
+        "#if !defined(DART_TARGET_OS_ANDROID) && !defined(DART_TARGET_OS_FUCHSIA) &&    \\\n"
+        "    !defined(DART_TARGET_OS_MACOS_IOS) && !defined(DART_TARGET_OS_LINUX) &&    \\\n"
+        "    !defined(DART_TARGET_OS_MACOS) && !defined(DART_TARGET_OS_WINDOWS)",
+        "#if !defined(DART_TARGET_OS_ANDROID) && !defined(DART_TARGET_OS_FUCHSIA) &&    \\\n"
+        "    !defined(DART_TARGET_OS_MACOS_IOS) && !defined(DART_TARGET_OS_LINUX) &&    \\\n"
+        "    !defined(DART_TARGET_OS_MACOS) && !defined(DART_TARGET_OS_WINDOWS) &&      \\\n"
+        "    !defined(DART_TARGET_OS_HORIZON)",
+        "dart globals.h (Target-OS-Liste)",
+    )
+
+    # 2b. Rueckfall auf das Host-OS, wenn kein Target gesetzt ist.
+    replace_once(
+        path,
+        "#elif defined(DART_HOST_OS_WINDOWS)\n"
+        "#define DART_TARGET_OS_WINDOWS 1\n"
+        "#else\n"
+        "#error Automatic target OS detection failed.",
+        "#elif defined(DART_HOST_OS_WINDOWS)\n"
+        "#define DART_TARGET_OS_WINDOWS 1\n"
+        "#elif defined(DART_HOST_OS_HORIZON)\n"
+        "#define DART_TARGET_OS_HORIZON 1\n"
+        "#else\n"
+        "#error Automatic target OS detection failed.",
+        "dart globals.h (Target-OS-Rueckfall)",
+    )
+
+    # 3. Klartextnamen.
+    replace_once(
+        path,
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#define kHostOperatingSystemName "windows"\n'
+        "#else\n"
+        "#error Host operating system detection failed.",
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#define kHostOperatingSystemName "windows"\n'
+        '#elif defined(DART_HOST_OS_HORIZON)\n'
+        '#define kHostOperatingSystemName "horizon"\n'
+        "#else\n"
+        "#error Host operating system detection failed.",
+        "dart globals.h (kHostOperatingSystemName)",
+    )
+
+    replace_once(
+        path,
+        '#elif defined(DART_TARGET_OS_WINDOWS)\n'
+        '#define kTargetOperatingSystemName "windows"\n'
+        "#else\n"
+        "#error Target operating system detection failed.",
+        '#elif defined(DART_TARGET_OS_WINDOWS)\n'
+        '#define kTargetOperatingSystemName "windows"\n'
+        '#elif defined(DART_TARGET_OS_HORIZON)\n'
+        '#define kTargetOperatingSystemName "horizon"\n'
+        "#else\n"
+        "#error Target operating system detection failed.",
+        "dart globals.h (kTargetOperatingSystemName)",
+    )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -538,6 +656,9 @@ def main() -> int:
 
     print("==> flutter/third_party/dart/runtime/BUILD.gn")
     patch_dart_runtime(SRC)
+
+    print("==> Dart-VM: platform/globals.h")
+    patch_dart_globals(SRC)
 
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)
