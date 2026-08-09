@@ -19,16 +19,16 @@ Version geprüft. Wo etwas nicht geprüft wurde, steht das ausdrücklich dabei.
 
 | Was | Wo | Anmerkung |
 |---|---|---|
-| dieses Repo | `E:\flutter-libnx` = `/mnt/e/flutter-libnx` | E: ist **exFAT**: keine Symlinks, keine POSIX-Rechte. Für Doku und Embedder-Quellen unkritisch; git braucht dort `safe.directory`. |
+| dieses Repo | `E:\flutter-libnx` = `/mnt/e/flutter-libnx` | E: am 2026-08-09 von exFAT auf **NTFS** formatiert |
 | Flutter-SDK (Monorepo, Referenz) | `C:\Users\mirkorichter\flutter` | nur lesend |
+| WSL-Distro Ubuntu 24.04 | `E:\wsl\Ubuntu-24.04` (ext4-VHDX, 25 GB) | von C: verschoben; C: kam dadurch von 9,5 auf 33,5 GB frei |
 | Dart-SDK-Checkout (Referenz) | `~/dart-sdk-ref` in WSL, 483 MB | @ `02abc578` |
-| Engine-Checkout (gclient) | **noch offen** | siehe unten |
+| Engine-Checkout (gclient) | `~/engine` in WSL (geplant) | volle ext4-Semantik, native Geschwindigkeit, physisch auf E: |
 
-**Offene Infrastrukturentscheidung:** Der `gclient`-Engine-Checkout braucht ~40–80 GB
-*und* Symlinks/POSIX-Rechte. Er passt weder ins WSL-Standarddateisystem (dessen
-`ext4.vhdx` liegt auf C:, dort sind nur noch ~9 GB frei) noch direkt auf exFAT.
-Sauberste Lösung: eine eigene ext4-VHDX auf E: anlegen und in WSL mounten – Daten liegen
-dann auf E:, haben aber volle Linux-Semantik und native Geschwindigkeit.
+**Zur Speichergrenze:** `df` meldet innerhalb von WSL 943 GB frei. Das ist irreführend –
+die ext4-VHDX ist dünn allokiert und liegt auf E:. Real begrenzt ist der Platz durch die
+dort noch freien ~207 GB. Für einen Engine-Checkout von 40–80 GB reicht das komfortabel,
+aber die Zahl aus `df` ist kein Maßstab.
 
 Der entscheidende Glücksfall: das installierte Flutter-SDK ist das Monorepo und enthält
 `engine/src/flutter` vollständig. Die Engine-C++-Quellen der gepinnten Version liegen also
