@@ -158,11 +158,13 @@ def replace_once(path: str, old: str, new: str, label: str) -> bool:
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
 
-    if new in text:
-        print(f"    schon gepatcht: {label}")
-        return False
+    # Reihenfolge zaehlt: Bei einer leeren Ersetzung waere `new in text` immer
+    # wahr, und der Patch wuerde faelschlich als erledigt gelten.
     if old not in text:
-        print(f"    ANKER NICHT GEFUNDEN in {label}", file=sys.stderr)
+        if new and new in text:
+            print(f"    schon gepatcht: {label}")
+        else:
+            print(f"    ANKER NICHT GEFUNDEN in {label}", file=sys.stderr)
         return False
 
     with open(path, "w", encoding="utf-8") as handle:
@@ -193,7 +195,17 @@ def patch_compiler_config(src: str) -> None:
     replace_once(
         path,
         '  if (is_qnx) {\n    defines += [\n      "_XOPEN_SOURCE=700",',
-        '  if (is_horizon) {\n    defines += [ "__SWITCH__" ]\n  }\n\n'
+        '  if (is_horizon) {\n'
+        '    defines += [\n'
+        '      "__SWITCH__",\n'
+        '\n'
+        '      # ICU waehlt seine Dateiabbildung ueber U_HAVE_MMAP. Ohne mmap\n'
+        '      # faellt es auf MAP_STDIO zurueck - stdio plus uprv_malloc,\n'
+        '      # genau der fuer solche Plattformen vorgesehene Weg\n'
+        '      # (source/common/umapfile.h:41-49).\n'
+        '      "U_HAVE_MMAP=0",\n'
+        '    ]\n'
+        '  }\n\n'
         '  if (is_qnx) {\n    defines += [\n      "_XOPEN_SOURCE=700",',
         "build/config/compiler/BUILD.gn",
     )
@@ -313,6 +325,172 @@ def patch_missing_includes(src: str) -> None:
     )
 
 
+def patch_fml_backtrace(src: str) -> None:
+    """Horizon hat keine execinfo.h und keine Stack-Unwinding-API.
+
+    Statt einen Backtrace zu erfinden, liefert der Pfad null Frames. Der
+    Aufrufer bekommt damit eine leere statt einer falschen Ausgabe.
+    """
+    path = os.path.join(src, "flutter", "fml", "backtrace.cc")
+
+    replace_once(
+        path,
+        "#else  // FML_OS_WIN\n"
+        "#include <execinfo.h>\n"
+        "#endif  // FML_OS_WIN",
+        "#elif defined(FML_OS_HORIZON)\n"
+        "// Horizon/libnx kennt kein execinfo.h. Siehe Backtrace() unten.\n"
+        "#else  // FML_OS_WIN\n"
+        "#include <execinfo.h>\n"
+        "#endif  // FML_OS_WIN",
+        "flutter/fml/backtrace.cc (Include)",
+    )
+
+    replace_once(
+        path,
+        "#if FML_OS_WIN\n"
+        "  return CaptureStackBackTrace(0, size, symbols, NULL);\n"
+        "#else\n"
+        "  return ::backtrace(symbols, size);\n"
+        "#endif  // FML_OS_WIN",
+        "#if FML_OS_WIN\n"
+        "  return CaptureStackBackTrace(0, size, symbols, NULL);\n"
+        "#elif defined(FML_OS_HORIZON)\n"
+        "  // Horizon bietet im Homebrew-Kontext keine Unwinding-API. Bewusst\n"
+        "  // null Frames: eine leere Ausgabe ist ehrlicher als eine erfundene.\n"
+        "  (void)symbols;\n"
+        "  (void)size;\n"
+        "  return 0;\n"
+        "#else\n"
+        "  return ::backtrace(symbols, size);\n"
+        "#endif  // FML_OS_WIN",
+        "flutter/fml/backtrace.cc (Backtrace)",
+    )
+
+
+def patch_fml_platform_sources(src: str, repo: str) -> None:
+    """Ersetzt die POSIX-Bausteine, die auf Horizon nicht funktionieren.
+
+    fml/BUILD.gn kennt nur `is_win` und `sonst POSIX`. QNX kommt damit durch,
+    weil es mmap und dlopen hat. Horizon hat beides nicht.
+    """
+    import shutil
+
+    target_dir = os.path.join(src, "flutter", "fml", "platform", "horizon")
+    os.makedirs(target_dir, exist_ok=True)
+    source_dir = os.path.join(repo, "patches", "flutter-engine", "files",
+                              "fml", "platform", "horizon")
+    for name in ("mapping_horizon.cc", "native_library_horizon.cc"):
+        shutil.copyfile(os.path.join(source_dir, name),
+                        os.path.join(target_dir, name))
+        print(f"    kopiert: fml/platform/horizon/{name}")
+
+    replace_once(
+        os.path.join(src, "flutter", "fml", "BUILD.gn"),
+        '      "platform/posix/process_posix.cc",\n'
+        "    ]\n"
+        "  }",
+        '      "platform/posix/process_posix.cc",\n'
+        "    ]\n"
+        "\n"
+        "    if (is_horizon) {\n"
+        "      # Horizon hat weder mmap noch dlopen.\n"
+        "      sources -= [\n"
+        '        "platform/posix/mapping_posix.cc",\n'
+        '        "platform/posix/native_library_posix.cc",\n'
+        "      ]\n"
+        "      sources += [\n"
+        '        "platform/horizon/mapping_horizon.cc",\n'
+        '        "platform/horizon/native_library_horizon.cc",\n'
+        "      ]\n"
+        "    }\n"
+        "  }",
+        "flutter/fml/BUILD.gn",
+    )
+
+    # file_posix.cc bindet sys/mman.h ein, benutzt daraus aber nichts. Der
+    # Include ist schlicht tot - Entfernen ist auch fuer andere Plattformen
+    # korrekt.
+    replace_once(
+        os.path.join(src, "flutter", "fml", "platform", "posix",
+                     "file_posix.cc"),
+        "#include <sys/mman.h>\n",
+        "",
+        "flutter/fml/platform/posix/file_posix.cc (toter Include)",
+    )
+
+
+def patch_cxx_std(src: str) -> None:
+    path = os.path.join(src, "build", "config", "compiler", "BUILD.gn")
+    # -std=c++20 setzt __STRICT_ANSI__, und newlib blendet daraufhin POSIX-
+    # Erweiterungen wie strdup aus - der Engine-Code benutzt sie aber
+    # (fml/platform/posix/posix_wrappers_posix.cc).
+    #
+    # devkitPro baut aus genau diesem Grund selbst mit GNU-Dialekten
+    # (switch_rules verwendet -std=gnu++...). Wir folgen dem.
+    replace_once(
+        path,
+        "  if (is_win) {\n"
+        '    cc_std = [ "/std:c++20" ]\n'
+        "  } else {\n"
+        '    cc_std = [ "-std=c++20" ]\n'
+        "  }",
+        "  if (is_win) {\n"
+        '    cc_std = [ "/std:c++20" ]\n'
+        "  } else if (is_horizon) {\n"
+        "    # GNU-Dialekt, damit newlib POSIX-Erweiterungen sichtbar laesst.\n"
+        '    cc_std = [ "-std=gnu++20" ]\n'
+        "  } else {\n"
+        '    cc_std = [ "-std=c++20" ]\n'
+        "  }",
+        "build/config/compiler/BUILD.gn (C++-Dialekt)",
+    )
+
+
+def patch_absl_gettid(src: str) -> None:
+    path = os.path.join(src, "third_party", "abseil-cpp", "absl", "base",
+                        "internal", "sysinfo.cc")
+    # Der Rueckfallpfad setzt voraus, dass pthread_t arithmetisch ist - der
+    # Kommentar dort sagt selbst, dass Plattformen ohne diese Eigenschaft
+    # weiter oben behandelt gehoeren. Auf Horizon ist pthread_t ein Zeiger auf
+    # die Thread-Struktur von libnx.
+    replace_once(
+        path,
+        "#else\n"
+        "\n"
+        "// Fallback implementation of `GetTID` using `pthread_self`.",
+        "#elif defined(__SWITCH__)\n"
+        "\n"
+        "// Auf Horizon ist pthread_t ein Zeiger auf die Thread-Struktur von\n"
+        "// libnx und damit nicht arithmetisch. Die Adresse ist innerhalb des\n"
+        "// Prozesses eindeutig; die Verkuerzung auf pid_t kann theoretisch\n"
+        "// kollidieren, weil nur die unteren 32 Bit uebrig bleiben.\n"
+        "pid_t GetTID() {\n"
+        "  return static_cast<pid_t>(reinterpret_cast<uintptr_t>(pthread_self()));\n"
+        "}\n"
+        "\n"
+        "#else\n"
+        "\n"
+        "// Fallback implementation of `GetTID` using `pthread_self`.",
+        "abseil-cpp sysinfo.cc (GetTID)",
+    )
+
+
+def patch_absl_elf_mem_image(src: str) -> None:
+    path = os.path.join(src, "third_party", "abseil-cpp", "absl", "debugging",
+                        "internal", "elf_mem_image.h")
+    # Der ELF-Symbolizer braucht link.h und die glibc-Erweiterungen fuer den
+    # dynamischen Linker. Horizon hat weder das eine noch das andere. Die Liste
+    # schliesst QNX, Haiku, VxWorks und weitere aus demselben Grund bereits aus.
+    replace_once(
+        path,
+        '#if defined(__ELF__) && !defined(__OpenBSD__) && !defined(__QNX__) &&    \\\n',
+        '#if defined(__ELF__) && !defined(__OpenBSD__) && !defined(__QNX__) &&    \\\n'
+        '    !defined(__SWITCH__) &&                                          \\\n',
+        "abseil-cpp elf_mem_image.h",
+    )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -356,6 +534,7 @@ def main() -> int:
     patch_compiler_config(SRC)
     patch_cxx_disable_modules(SRC)
     patch_werror(SRC)
+    patch_cxx_std(SRC)
 
     print("==> flutter/third_party/dart/runtime/BUILD.gn")
     patch_dart_runtime(SRC)
@@ -368,6 +547,17 @@ def main() -> int:
 
     print("==> fehlende Includes")
     patch_missing_includes(SRC)
+
+    print("==> flutter/fml/backtrace.cc")
+    patch_fml_backtrace(SRC)
+
+    print("==> third_party/abseil-cpp")
+    patch_absl_gettid(SRC)
+    patch_absl_elf_mem_image(SRC)
+
+    print("==> fml-Plattformquellen für Horizon")
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    patch_fml_platform_sources(SRC, repo)
     return 0
 
 

@@ -66,8 +66,10 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] `pkg-config` ohne root beschafft (aus dem Container-Image nach `~/bin`)
 - [x] devkitA64 übersetzt Engine-Quellen (erste `.o`-Dateien liegen vor)
 - [x] `FML_OS_HORIZON` in `fml/build_config.h`
-- [ ] **fml kompiliert** – aktuell bei 12 von 515 Objekten;
-      Stand: `fml/backtrace.cc` braucht `execinfo.h` (glibc-Backtraces)
+- [x] **fml kompiliert vollständig** – 43 Objektdateien, AArch64 ELF64,
+      `ninja: no work to do` beim zweiten Lauf
+- [x] eigene fml-Plattformquellen für Horizon (`mapping_horizon.cc`,
+      `native_library_horizon.cc`)
 - [ ] Dart-VM-Portierungsdateien angelegt
 - [ ] Dart VM kompiliert
 - [ ] Skia (Software) kompiliert

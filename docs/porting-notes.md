@@ -93,6 +93,34 @@ Sollte sich diese Klasse häufen, ist der `custom_toolchain`-Weg aus
 `docs/gn-target-horizon.md` die Alternative – Clang gegen das devkitA64-Sysroot statt GCC.
 Bisher sind es zwei Fälle; das rechtfertigt den Wechsel noch nicht.
 
+### fml übersetzt vollständig
+
+| # | Fehler | Art | Lösung |
+|---|---|---|---|
+| 16 | `execinfo.h` fehlt | Plattformlücke | Backtrace liefert für Horizon null Frames – leer statt erfunden |
+| 17 | `sys/mman.h` in `mapping_posix.cc` | Plattformlücke | eigenes `mapping_horizon.cc`: Datei in Heap-Puffer lesen |
+| 18 | `sys/mman.h` in `file_posix.cc` | toter Code | Include entfernt, wird dort nirgends benutzt |
+| 19 | `dlfcn.h` | Plattformlücke | eigenes `native_library_horizon.cc`, schlägt sichtbar fehl |
+| 20 | `::strdup` nicht deklariert | Toolchain | `-std=gnu++20` statt `-std=c++20`; strenges ANSI blendet newlibs POSIX-Erweiterungen aus |
+| 21 | `sys/mman.h` in ICU | Plattformlücke | `U_HAVE_MMAP=0` → ICU nimmt seinen eigenen `MAP_STDIO`-Pfad |
+| 22 | `static_cast<pid_t>(pthread_t)` | Plattformunterschied | `pthread_t` ist auf Horizon ein Zeiger; eigener `GetTID`-Zweig in abseil |
+| 23 | `link.h` fehlt | Plattformlücke | `__SWITCH__` in die Ausschlussliste von `ABSL_HAVE_ELF_MEM_IMAGE` |
+
+**Ergebnis:** 43 Objektdateien, `ELF64 / AArch64 / REL`, zweiter Lauf meldet
+`ninja: no work to do`. Damit übersetzt die Betriebssystemabstraktion der Flutter Engine
+für Horizon.
+
+**Muster, das sich abzeichnet:** Fast jede Lücke hat im Upstream bereits einen vorgesehenen
+Ausweg, weil andere schlanke Plattformen dasselbe Problem hatten. ICU hat `MAP_STDIO`,
+abseil hat eine Ausschlussliste, in der QNX, Haiku und VxWorks schon stehen. Es lohnt sich
+also, vor jeder eigenen Lösung zu prüfen, ob der Code den Fall nicht schon kennt.
+
+**Die drei eigenen Implementierungen** liegen unter `patches/flutter-engine/files/` und
+werden vom Patch-Skript in den Checkout kopiert. Die wichtigste Abweichung: `FileMapping`
+liest die Datei vollständig in den Heap statt sie abzubilden. Das kostet Speicher und
+verhindert schreibbare Abbildungen – Letzteres schlägt bewusst mit Protokolleintrag fehl,
+statt eine abweichende Zusicherung zu liefern.
+
 **Fehler 15 und 16 sind verschiedene Dinge.** `<climits>` ist eine echte
 Portabilitätslücke im Upstream-Code, die auf jeder schlanken libc auffiele – newlib zieht
 weniger transitiv herein als glibc. `execinfo.h` dagegen ist eine Funktion, die Horizon
