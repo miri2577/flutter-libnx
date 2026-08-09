@@ -6,6 +6,23 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-09 – devkitPro baut standardmäßig ohne RTTI und ohne Exceptions
+
+**Befund:** Das offizielle Anwendungs-Template setzt
+`CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions`
+(`third_party/reference/switch-application.Makefile:57`). Ebenso bestätigt es, dass
+`-D__SWITCH__` aus dem Makefile kommt (`:55`) und nicht vom Compiler – siehe
+`docs/gn-target-horizon.md`.
+
+**Konsequenz:** Die Coding-Regel „keine Exceptions voraussetzen, bevor geprüft ist, ob wir
+sie im Ziel-Build wollen" ist damit beantwortet: Der Homebrew-Standard ist ohne. Unser
+Embedder hält sich daran. Für den Engine-Build heißt das, dass Engine, Dart-VM und Skia
+mit denselben Einstellungen gebaut werden müssen – gemischte Übersetzungseinheiten
+(einige mit, andere ohne Exceptions) sind eine der unangenehmeren Fehlerquellen beim
+Linken. Zu prüfen, sobald der Engine-Build steht.
+
+---
+
 ## 2026-08-09 – Dart braucht im AOT-Modus keinen ausführbaren Speicher (mit einer Ausnahme)
 
 Geprüft gegen `dart-lang/sdk` @ `02abc578` (Shallow-Checkout unter `~/dart-sdk-ref` in WSL).
