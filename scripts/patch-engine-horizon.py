@@ -184,6 +184,59 @@ def patch_shell_platform(src: str) -> None:
     )
 
 
+def patch_compiler_config(src: str) -> None:
+    path = os.path.join(src, "build", "config", "compiler", "BUILD.gn")
+    # devkitPro setzt __SWITCH__ sonst ueber sein Makefile (switch_rules).
+    # GN baut nicht darueber, also muessen wir es selbst mitgeben - sonst
+    # faellt build_config.h in seinen #error-Zweig und die Dart-VM kann ihr
+    # Host-OS nicht bestimmen.
+    replace_once(
+        path,
+        '  if (is_qnx) {\n    defines += [\n      "_XOPEN_SOURCE=700",',
+        '  if (is_horizon) {\n    defines += [ "__SWITCH__" ]\n  }\n\n'
+        '  if (is_qnx) {\n    defines += [\n      "_XOPEN_SOURCE=700",',
+        "build/config/compiler/BUILD.gn",
+    )
+
+
+def patch_dart_runtime(src: str) -> None:
+    path = os.path.join(
+        src, "flutter", "third_party", "dart", "runtime", "BUILD.gn")
+    replace_once(
+        path,
+        '  } else if (target_os == "win") {\n'
+        '    defines += [ "DART_TARGET_OS_WINDOWS" ]',
+        '  } else if (target_os == "horizon") {\n'
+        '    defines += [ "DART_TARGET_OS_HORIZON" ]\n'
+        '  } else if (target_os == "win") {\n'
+        '    defines += [ "DART_TARGET_OS_WINDOWS" ]',
+        "third_party/dart/runtime/BUILD.gn",
+    )
+
+
+def patch_zlib(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
+    # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
+    # CPU-Faehigkeiten (getauxval unter Linux, sysctl unter macOS). Auf Horizon
+    # gibt es davon nichts. Statt eine Erkennung vorzutaeuschen, schalten wir
+    # die Optimierung ab.
+    #
+    # Spaeter lohnt ein zweiter Blick: Die Switch-Hardware ist fest, ARMv8-CRC32
+    # also garantiert vorhanden. Man koennte die Erkennung schlicht durch eine
+    # Konstante ersetzen - das erfordert aber einen Patch am zlib-C-Code und
+    # gehoert nicht ins MVP.
+    replace_once(
+        path,
+        "use_arm_neon_optimizations = false\n"
+        'if ((current_cpu == "arm" || current_cpu == "arm64") &&\n'
+        "    !(is_win && !is_clang)) {",
+        "use_arm_neon_optimizations = false\n"
+        'if ((current_cpu == "arm" || current_cpu == "arm64") &&\n'
+        "    !(is_win && !is_clang) && !is_horizon) {",
+        "third_party/zlib/BUILD.gn",
+    )
+
+
 def main() -> int:
     buildconfig = os.path.join(SRC, "build", "config", "BUILDCONFIG.gn")
     if not os.path.exists(buildconfig):
@@ -199,6 +252,15 @@ def main() -> int:
 
     print("==> flutter/shell/platform/BUILD.gn")
     patch_shell_platform(SRC)
+
+    print("==> build/config/compiler/BUILD.gn")
+    patch_compiler_config(SRC)
+
+    print("==> flutter/third_party/dart/runtime/BUILD.gn")
+    patch_dart_runtime(SRC)
+
+    print("==> flutter/third_party/zlib/BUILD.gn")
+    patch_zlib(SRC)
     return 0
 
 

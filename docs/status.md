@@ -62,8 +62,8 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] `current_os = "horizon"` in `BUILDCONFIG.gn` definiert
 - [x] `build/toolchain/horizon` nach QNX-Vorbild (gcc_toolchain, `is_clang = false`)
 - [x] `flutter/shell/platform/BUILD.gn` kennt horizon
-- [ ] **`gn gen` läuft durch** – hängt aktuell an der Dart-VM
-      (`third_party/dart/runtime/BUILD.gn:155`, „Unknown target_os: horizon")
+- [x] **`gn gen` läuft durch** – 918 Targets aus 304 Dateien
+- [x] `pkg-config` ohne root beschafft (aus dem Container-Image nach `~/bin`)
 - [ ] Dart-VM-Portierungsdateien angelegt
 - [ ] fml kompiliert
 - [ ] Dart VM kompiliert

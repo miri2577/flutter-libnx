@@ -10,7 +10,8 @@ GN="$SRC/flutter/third_party/gn/gn"
 OUT="${OUT:-out/horizon_release_arm64}"
 
 # GN ruft Hilfsskripte über `vpython3` auf, das aus depot_tools kommt.
-export PATH="${DEPOT_TOOLS:-$HOME/depot_tools}:$PATH"
+# ~/bin enthält das ohne root beschaffte pkg-config (siehe extract-pkgconf.sh).
+export PATH="$HOME/bin:${DEPOT_TOOLS:-$HOME/depot_tools}:$PATH"
 export DEPOT_TOOLS_UPDATE=0
 
 cd "$SRC" || exit 1
