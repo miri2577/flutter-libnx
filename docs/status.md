@@ -31,9 +31,13 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       übertragen per `nxlink` – Framebuffer zeigt das erwartete Bild
 - [x] **Controller-Eingabe reagiert** (A → gelbe Fläche)
 - [x] Bild wird tatsächlich fortlaufend neu gezeichnet (wandernder Balken)
-- [ ] Logging (nxlink/Datei) liefert Ausgabe – noch nicht gesehen
-- [ ] sauberes Beenden über Plus – noch nicht bestätigt
-- [ ] Framebuffer-Stride gegen `width * 4` geprüft
+- [x] **sauberes Beenden über Plus**
+- [x] **Framebuffer-Stride gemessen: 5120 Bytes = `1280 * 4`** – Flutters Puffer kann
+      direkt durchgereicht werden, kein zeilenweises Umkopieren nötig
+- [x] **Prozessspeicher gemessen: 3007 MB gesamt, 243 MB belegt** – und zwar im
+      *Applet-Modus*, siehe `docs/hardware-target.md`
+- [ ] Logging (nxlink/Datei) liefert Ausgabe – nxlink war nicht verbunden, die
+      SD-Logdatei wurde noch nicht ausgelesen
 
 ## Meilenstein 2 – Engine Cross-Compile PoC
 
