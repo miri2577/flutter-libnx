@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdarg>
+#include <cstdint>
 
 namespace flutter_libnx {
 
@@ -31,6 +32,16 @@ struct LogConfig {
   // nullptr schaltet die Dateisenke ab.
   const char* file_path = nullptr;
 
+  // Logausgabe an einen TCP-Empfänger auf dem Entwicklungsrechner.
+  //
+  // Wichtig ist die Richtung: Die Switch baut die Verbindung auf, nicht umgekehrt.
+  // Damit funktioniert das auch dann, wenn der Empfänger hinter NAT sitzt – etwa
+  // in einem Container. Der umgekehrte Weg (nxlink -s) scheitert genau daran.
+  //
+  // nullptr schaltet die Senke ab.
+  const char* remote_host = nullptr;
+  uint16_t remote_port = 28800;
+
   LogLevel min_level = LogLevel::kDebug;
 };
 
@@ -40,6 +51,9 @@ void LogShutdown();
 
 // true, wenn nxlink tatsächlich verbunden ist. Erst nach LogInit aussagekräftig.
 bool LogHasNxlink();
+
+// true, wenn die TCP-Senke steht. Erst nach LogInit aussagekräftig.
+bool LogHasRemote();
 
 void LogWrite(LogLevel level, const char* file, int line, const char* fmt, ...)
     __attribute__((format(printf, 4, 5)));

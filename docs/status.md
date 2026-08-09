@@ -36,8 +36,9 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       direkt durchgereicht werden, kein zeilenweises Umkopieren nötig
 - [x] **Prozessspeicher gemessen: 3007 MB gesamt, 243 MB belegt** – und zwar im
       *Applet-Modus*, siehe `docs/hardware-target.md`
-- [ ] Logging (nxlink/Datei) liefert Ausgabe – nxlink war nicht verbunden, die
-      SD-Logdatei wurde noch nicht ausgelesen
+- [x] **Logging liefert Ausgabe am Entwicklungsrechner** – über eine TCP-Senke, bei der
+      die Switch die Verbindung aufbaut (`scripts/log-listener.ps1`). `nxlink -s`
+      scheitert an Docker-NAT, siehe `docs/porting-notes.md`.
 
 ## Meilenstein 1b – AOT-Assembly-PoC
 
@@ -48,7 +49,10 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] mit devkitA64 assembliert – ohne Anpassung, ohne Warnung
 - [x] in eine `.nro` gelinkt (758 KB), alle vier Symbole in der ELF vorhanden
 - [x] **Instruktionen liegen als `T` in `.text`** – kein `dlopen`/`mmap`/`mprotect` nötig
-- [ ] auf Hardware gestartet, Symboladressen zur Laufzeit geprüft
+- [x] **auf Hardware gestartet, Symboladressen zur Laufzeit geprüft** – Instruktionen
+      liegen 0xAC0 Bytes hinter `main()`, also im selben ausführbaren Mapping
+- [x] **Snapshot-Magic `0xdcdcf5f5` zur Laufzeit korrekt** – die Daten überstehen
+      Linken, NRO-Verpackung und Laden unbeschädigt
 - [ ] Snapshot *ausgeführt* – braucht die Dart-VM, also Meilenstein 2
 
 ## Meilenstein 2 – Engine Cross-Compile PoC

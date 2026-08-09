@@ -18,9 +18,9 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	aot_poc
 BUILD		:=	build
-SOURCES		:=	source generated
+SOURCES		:=	source generated ../../embedder/src
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	../../embedder/include
 #ROMFS	:=	romfs
 
 APP_TITLE	:=	aot_poc

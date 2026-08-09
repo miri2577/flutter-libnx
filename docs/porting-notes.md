@@ -95,9 +95,52 @@ führendem Unterstrich (`_kDartVmSnapshotData`), die Engine sucht per dlsym dage
 (`dart_snapshot.cc:18-21`). Für unseren Weg irrelevant, weil wir Zeiger übergeben statt
 Namen – für den ELF-/`dlopen`-Weg wäre es eine stille Fehlerquelle gewesen.
 
+**Befund 5 – auf Hardware bestätigt.** Die `.nro` auf der Konsole gestartet, Adressen und
+erste Bytes zur Laufzeit ausgelesen:
+
+```text
+kDartVmSnapshotData              0x57f0ef740  f5 f5 dc dc cc 41 00 00
+kDartVmSnapshotInstructions      0x57f06ec40  20 6a 01 00 00 00 00 00
+kDartIsolateSnapshotData         0x57f0f3f40  f5 f5 dc dc ff 6b 02 00
+kDartIsolateSnapshotInstructions 0x57f085680  a0 f9 03 00 00 00 00 00
+Adresse von main()               0x57f06e180
+```
+
+Zwei Dinge daran zählen:
+
+`f5 f5 dc dc` ist little-endian `0xdcdcf5f5` – die Snapshot-Magic der Dart-VM
+(`runtime/vm/snapshot.h:37`). Genau diesen Wert liest `SnapshotHeaderReader::IsValid()`
+als Erstes. Die Daten haben Übersetzung, Linken, NRO-Verpackung und Laden also unbeschädigt
+überstanden.
+
+`kDartVmSnapshotInstructions` liegt 0xAC0 Bytes hinter `main()`. Dart-AOT-Code und unser
+C++-Code liegen damit im selben Modul und im selben ausführbar gemappten Bereich. Der
+Homebrew-Loader hat den Snapshot ausführbar gemappt, ohne dass wir etwas dafür tun mussten.
+
 **Was das ausdrücklich nicht zeigt:** dass der Snapshot *läuft*. Dafür fehlt die Dart-VM
 für Horizon. Geprüft ist der Ladeweg, nicht die Ausführung. Der nächste Beweis dafür
 kommt erst mit Meilenstein 2.
+
+---
+
+## 2026-08-09 – Logausgabe: Richtung umdrehen statt gegen NAT kämpfen
+
+**Problem:** `nxlink -s` leitet stdout der Konsole zum Entwicklungsrechner um, indem die
+Switch sich zum Absender *zurück*verbindet. Läuft nxlink in einem Container, ist der
+Absender hinter NAT und nicht erreichbar – die Ausgabe kommt nie an. Mit
+`--network host` funktioniert zwar der Upload, aber nicht der Rückkanal.
+
+**Lösung:** Eine TCP-Senke im Logging, bei der die **Switch** die Verbindung aufbaut
+(`LogConfig::remote_host`/`remote_port`). Ausgehende Verbindungen gehen durch jedes NAT.
+Empfänger ist `scripts/log-listener.ps1`.
+
+Zwei Eigenschaften, die sich beim Debuggen auszahlen: Der Verbindungsaufbau hat zwei
+Sekunden Zeitlimit, damit ein nicht laufender Empfänger nicht den Anwendungsstart
+blockiert. Und bricht die Verbindung im Betrieb weg, legt sich nur diese Senke still,
+während Datei und Konsole weiterlaufen.
+
+Die Senke sitzt im Embedder-Logging, nicht im Beispiel – der spätere Flutter-Host bekommt
+sie damit geschenkt, inklusive der Engine-Ausgabe über `FlutterLogMessageCallback`.
 
 ---
 
