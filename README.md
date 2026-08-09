@@ -30,9 +30,11 @@ Alles Übrige. Aktueller Detailstand: `docs/status.md`.
 | Flutter (Monorepo) | `db50e20168db8fee486b9abf32fc912de3bc5b6a` – Tag `3.41.6`, stable |
 | Dart SDK | `02abc57898bebc334a997e609ce5827c8ef207d7` (Dart 3.11.4) |
 | Skia | `a183ded9ad67d998a5b0fe4cd86d3ef5402ffb45` |
-| libnx (Referenz) | `dbcc1beafc6b47b5ffbeb8ba82463a7d45da40bb` |
-| devkitA64 | noch nicht installiert |
-| Build-Host | WSL2 Ubuntu 24.04 (x86_64) |
+| libnx | `4.12.0` (Referenz-Checkout auf Tag `v4.12.0`) |
+| devkitA64 | `r29.2-1`, GCC `15.2.0`, binutils `2.45.1`, newlib `4.6.0` |
+| switch-tools | `1.13.1-1` |
+| Toolchain-Bezug | Container-Image `devkitpro/devkita64` – keine lokale Installation nötig |
+| Build-Host | Windows + Docker Desktop; WSL2 Ubuntu 24.04 für den späteren Engine-Build |
 
 Warum 3.41.6 und nicht `main`: Ab 3.44 ist Skia auf Android entfernt worden, die Zukunft
 des Software-Renderers für Embedder-API-Nutzer ist damit offen. 3.41.6 ist die
@@ -50,23 +52,24 @@ Bootstrap-Version; das Upgrade-Risiko ist in `docs/feasibility.md` §2 beschrieb
 
 ## Wie baue ich das Projekt?
 
-Voraussetzung ist die Toolchain (einmalig, braucht ein interaktives Terminal wegen sudo):
+Es wird **keine lokale devkitPro-Installation** gebraucht. Die Toolchain läuft im
+offiziellen Container-Image, was nebenbei den Vorteil hat, dass alle Beteiligten exakt
+dieselben Compilerversionen benutzen:
+
+```powershell
+.\scripts\dkp.ps1 examples/hello_libnx "make clean && make"
+```
+
+Ergebnis: `examples/hello_libnx/hello_libnx.nro` (214 KB). Das baut, ist aber **noch nie
+auf Hardware gestartet** – siehe `docs/status.md`.
+
+Wer die Toolchain lieber nativ installiert (braucht root):
 
 ```bash
-# in WSL (Ubuntu 24.04)
+# in WSL (Ubuntu 24.04), interaktives Terminal wegen sudo
 cd /mnt/e/flutter-libnx && ./scripts/setup-devkitpro.sh
+cd examples/hello_libnx && make
 ```
-
-Danach das Beispiel aus Meilenstein 1:
-
-```bash
-export DEVKITPRO=/opt/devkitpro
-cd /mnt/e/flutter-libnx/examples/hello_libnx && make
-```
-
-Ergebnis wäre `examples/hello_libnx/hello_libnx.nro`. **Das ist bisher nie gelaufen** –
-der Code ist geschrieben und alle libnx-Aufrufe sind gegen die echten Header geprüft,
-aber ohne Toolchain gibt es keinen Compilerdurchlauf. Siehe `docs/status.md`.
 
 Referenzquellen (libnx, `embedder.h` der gepinnten Version) neu holen:
 

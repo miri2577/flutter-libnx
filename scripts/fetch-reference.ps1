@@ -4,7 +4,8 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $flutterRev = 'db50e20168db8fee486b9abf32fc912de3bc5b6a'
-$libnxRev   = 'dbcc1beafc6b47b5ffbeb8ba82463a7d45da40bb'
+# Passend zur libnx-Version im Container-Image devkitpro/devkita64 (4.12.0-1).
+$libnxRev   = 'v4.12.0'
 
 New-Item -ItemType Directory -Force -Path "$root\third_party\reference" | Out-Null
 

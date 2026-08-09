@@ -17,14 +17,16 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] Dart-SDK-Quellen ausgecheckt (`~/dart-sdk-ref` in WSL, @ `02abc578`)
 - [x] `VirtualMemory`-Bedarf der Dart-VM im AOT-Modus vermessen
 - [x] geklärt: ausführbarer Speicher im AOT-Product-Mode nicht nötig (außer FFI-Callbacks)
-- [ ] devkitPro/devkitA64 installiert (blockiert: sudo-Passwort in WSL)
+- [x] Toolchain nutzbar – über das Container-Image `devkitpro/devkita64` statt lokaler
+      Installation, damit ohne root (`scripts/dkp.ps1`)
 
 ## Meilenstein 1 – Minimaler libnx Host
 
 - [x] Quellcode geschrieben (`embedder/src/log.cpp`, `embedder/src/platform/switch_platform.cpp`,
       `examples/hello_libnx/`) – **ungebaut**, Toolchain fehlt noch
 - [x] alle benutzten libnx-Symbole gegen die echten Header verifiziert (24 Stück)
-- [ ] `hello_libnx.nro` kompiliert
+- [x] **`hello_libnx.nro` kompiliert** – 214 KB, gültiges `NRO0`-Magic, null Warnungen
+      bei `-Wall`, sauberer Rebuild reproduziert
 - [ ] startet auf Hardware
 - [ ] Logging (nxlink/Datei) liefert Ausgabe
 - [ ] Controller-Eingabe reagiert

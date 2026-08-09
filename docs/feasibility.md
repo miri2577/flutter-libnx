@@ -11,8 +11,8 @@ Version geprüft. Wo etwas nicht geprüft wurde, steht das ausdrücklich dabei.
 | Dart SDK | `02abc57898bebc334a997e609ce5827c8ef207d7` (Dart 3.11.4) | `DEPS`, `dart_revision` |
 | Skia | `a183ded9ad67d998a5b0fe4cd86d3ef5402ffb45` | `DEPS`, `skia_revision` |
 | Engine-Artefakt-Hash (Prebuilts) | `5cdd32777948fa7a648fac915f8da7120ac7e97a`, Revision `425cfb54d0` | `flutter --version` |
-| libnx (Referenz) | `dbcc1beafc6b47b5ffbeb8ba82463a7d45da40bb` (master) | `third_party/libnx` |
-| devkitA64 / devkitPro | **noch nicht installiert** | – |
+| libnx | `4.12.0` | Container-Image; Referenz-Checkout `third_party/libnx` @ `v4.12.0` |
+| devkitA64 | `r29.2-1` (GCC 15.2.0, binutils 2.45.1, newlib 4.6.0), switch-tools 1.13.1 | `devkitpro/devkita64` |
 | Build-Host | WSL2 Ubuntu 24.04.4, x86_64, 4 Cores, 11 GB RAM (via `.wslconfig`, 16 GB Host) | `uname`, `free` |
 
 ### Ablageorte

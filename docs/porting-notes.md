@@ -6,6 +6,34 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-09 – Toolchain über Container statt lokaler Installation
+
+**Befund:** Die lokale devkitPro-Installation scheiterte an einer sudo-Passwortabfrage, die
+sich nicht automatisieren ließ. Das offizielle Image `devkitpro/devkita64` (2,79 GB)
+enthält alles Nötige: devkitA64 r29.2-1 mit GCC 15.2.0, binutils 2.45.1, newlib 4.6.0,
+libnx 4.12.0, switch-tools 1.13.1, general-tools 1.4.4.
+
+**Konsequenz:** `scripts/dkp.ps1` hängt das Repo als `/work` in den Container und führt
+darin einen Befehl aus. Kein root, keine Installation, und alle Beteiligten bauen gegen
+exakt dieselben Compilerversionen – bei einer Portierung, bei der Compilerverhalten
+selbst zur Fehlerquelle wird, ist das mehr wert als die Bequemlichkeit.
+
+Der Referenz-Checkout unter `third_party/libnx` wurde von `master` auf Tag `v4.12.0`
+umgestellt, damit die Header, gegen die ich prüfe, denen im Image entsprechen.
+
+---
+
+## 2026-08-09 – `hello_libnx` baut
+
+**Befund:** Erster Build ohne Compilerfehler, sauberer Rebuild ohne eine einzige Warnung
+bei `-Wall`. Ergebnis: 214 KB, `NRO0`-Magic an Offset 0x10 vorhanden.
+
+**Konsequenz:** Der Weg Quelltext → `.elf` → `.nro` steht. Was das **nicht** zeigt: ob
+das Ding auf Hardware startet, ob der Framebuffer das erwartete Format hat und ob der
+Stride `width * 4` ist. Das sind Hardwarefragen.
+
+---
+
 ## 2026-08-09 – devkitPro baut standardmäßig ohne RTTI und ohne Exceptions
 
 **Befund:** Das offizielle Anwendungs-Template setzt
