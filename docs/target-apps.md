@@ -37,7 +37,7 @@ in der Plugin-Arbeit nach vorn, nicht die App-spezifischen:
 | `path_provider` | klein | feste Pfade unter `/switch/flutter_apps/<app-id>/` |
 | `shared_preferences` | klein | Datei auf SD, JSON oder Hive-artig |
 | `package_info_plus` | klein | Werte aus der NACP bzw. Konstanten |
-| `url_launcher` | klein | kein Browser vorhanden – ehrlich als „nicht unterstützt" beantworten statt still zu schlucken |
+| `url_launcher` | klein | über das System-Web-Applet (`webPageCreate`/`webConfigShow`) – siehe Korrektur unten |
 
 ### C – Native Plugins ohne sinnvolle Switch-Entsprechung
 
@@ -59,13 +59,58 @@ Audio- und GPU-Anbindung. devkitPro hat FFmpeg als Portlib, aber Hardware-Videod
 ist im Homebrew-Umfeld nicht ohne Weiteres zugänglich, und Software-Decoding von 1080p auf
 den verfügbaren Kernen ist bestenfalls grenzwertig. Genutzt in `main.dart`,
 `musik_page.dart`, `radio_page.dart`, `zattoo_service.dart`, `spotify_service.dart`.
+Es gibt womöglich einen deutlich billigeren Weg über das System-Applet – siehe unten.
 
-**`flutter_inappwebview`** – braucht eine Browser-Engine. Auf der Switch existiert keine,
-die Homebrew nutzen könnte. In Referenz-App hängt daran mehr als Bequemlichkeit: Die WebView
-löst Captchas und Hoster-Weiterleitungen auf (`captcha_resolver_service.dart`,
-`flyfile_resolver_service.dart`, `hoster_resolver_service.dart`,
-`webview_resolver_service.dart`, `zattoo_service.dart`). Diese Abläufe müssten anders
-gebaut werden – etwa serverseitig auf vorhandener eigener Infrastruktur – statt im Client.
+**`flutter_inappwebview`** – siehe eigenen Abschnitt unten. Die frühere Aussage „auf der
+Switch existiert keine Browser-Engine" war falsch.
+
+## Korrektur 2026-08-09: Es gibt eine Browser-Engine, aber nicht als View
+
+Die Switch hat einen systemeigenen Browser (NetFront NX, WebKit-basiert) als
+**Applet**, und libnx spricht ihn vollständig an: `applets/web.h`, 862 Zeilen.
+Homebrew kann ihn starten (`webPageCreate` + `webConfigShow`), und die Domain der
+übergebenen URL wird automatisch auf die Whitelist gesetzt (`web.h:315`) – eine
+Host-Application ist dafür also nicht nötig.
+
+Was damit **nicht** geht:
+
+- **Kein Einbetten.** Es ist ein eigenes Vollbild-Applet, kein View. `InAppWebView` als
+  Widget im Flutter-Baum ist damit nicht abbildbar, ebenso wenig eine Headless-WebView.
+- **Kein Cookie-Zugriff.** `web.h` enthält keine einzige Cookie-Funktion (geprüft per
+  Suche über die gesamte Datei). Zurück kommen nur Exit-Grund, letzte URL und ein paar
+  Share-/Media-Flags (`webReplyGet*`, `web.h:743-792`).
+
+Was damit **geht**:
+
+- Ein Switch-eigenes Plugin `switch_web`, das eine URL im Systembrowser öffnet und die
+  letzte URL zurückgibt (`webConfigSetCallbackUrl` + `webReplyGetLastUrl`). Das deckt
+  OAuth-artige Rückruf-Abläufe ab.
+- `url_launcher` ist damit **doch** implementierbar – die frühere Einordnung „kein Browser
+  vorhanden" in Gruppe B stimmt so nicht.
+
+Für Referenz-App bleibt die Captcha-Auflösung trotzdem schwierig: Ein
+Cloudflare-Clearance-Cookie ist HttpOnly und wäre selbst mit JavaScript auf einer eigenen
+Zwischenseite nicht auslesbar, um es über die Callback-URL zurückzureichen. Ob der bei
+FlyFile benötigte Wert ein Cookie oder ein per API zurückgegebener Token ist, müsste man
+sich im konkreten Ablauf ansehen – im zweiten Fall wäre der Callback-Weg gangbar.
+
+## Möglicherweise wichtiger Nebenbefund: Video über das Web-Applet
+
+Dasselbe Applet kann direkt als **Medienspieler** starten:
+`WebArgType_BootAsMediaPlayer` [2.0.0+], dazu `MediaAutoPlay`, `MediaPlayerUi`,
+`MediaPlayerSpeedControl`, `MediaPlayerAutoClose`, und als Rückgabe
+`webReplyGetMediaPlayerAutoClosedByCompletion` – „Wiedergabe bis zum Ende gelaufen".
+Genau darüber läuft auch `webYouTubeVideoCreate`.
+
+Falls dieser Spieler eine HLS-URL akzeptiert, bräuchte Videowiedergabe **kein** libmpv und
+kein FFmpeg: Der Embedder würde die Stream-URL an das Systemapplet übergeben. Preis wäre,
+dass die Wiedergabe das Bild komplett übernimmt – keine Flutter-Overlays, keine Steuerung
+aus Dart heraus während des Abspielens, Rückkehr erst beim Beenden.
+
+**Ungeprüft und vor jeder Planung zu klären:** ob HLS unterstützt wird, ob das Applet aus
+Homebrew heraus im Applet-Modus (hbmenu über Album) überhaupt startet, und welche
+Speichergrenzen dort gelten. Das sind Hardwarefragen, keine Header-Fragen – sie gehören in
+ein kleines Testprogramm, sobald die Toolchain steht.
 
 ## Was daraus folgt
 
