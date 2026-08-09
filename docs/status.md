@@ -14,8 +14,10 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] Präzedenzfall für neues Target-OS in der Engine gefunden (QNX)
 - [x] libnx-Referenz-Checkout, Threading-/JIT-/Virtmem-Fähigkeiten geprüft
 - [x] Portability Matrix (erste Fassung)
+- [x] Dart-SDK-Quellen ausgecheckt (`~/dart-sdk-ref` in WSL, @ `02abc578`)
+- [x] `VirtualMemory`-Bedarf der Dart-VM im AOT-Modus vermessen
+- [x] geklärt: ausführbarer Speicher im AOT-Product-Mode nicht nötig (außer FFI-Callbacks)
 - [ ] devkitPro/devkitA64 installiert (blockiert: sudo-Passwort in WSL)
-- [ ] Dart-SDK-Quellen ausgecheckt und OS-Abstraktion im Detail vermessen
 
 ## Meilenstein 1 – Minimaler libnx Host
 

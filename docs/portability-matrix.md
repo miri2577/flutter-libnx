@@ -18,8 +18,10 @@ Status-Legende:
 | Thread-Stacks | frei wählbar | 4K-Alignment erzwungen (`newlib.c:166`) | OK | Stackgrößen zentral konfigurieren |
 | CPU-Cores | mehrere Threads parallel | Homebrew regulär 3 nutzbare Cores | OK | Task-Runner-Zuordnung dokumentieren |
 | Filesystem | `open/read/write/stat`, Verzeichnisse | Newlib + devoptab (`sdmc:/`), `romfs` | WAHRSCH. | Assets von SD; `AssetResolver` kapselt Pfade |
-| `mmap` / Virtual Memory | Dart `virtual_memory_posix.cc`: `mmap`, `mprotect`, `munmap` | kein `mmap`; `virtmem.h`, `svcMapMemory`, `svcSetMemoryPermission` | **LÜCKE** | `virtual_memory_horizon.cc` neu; Umfang hängt an Abschnitt 4 der Machbarkeitsanalyse |
-| Executable Memory | im AOT-Product-Mode hoffentlich nicht nötig | `jit.h` (RW/RX-Doppelmapping) als Rückfall | WAHRSCH. nicht nötig | AOT-Instruktionen in `.text` der NRO linken |
+| `mmap` / Virtual Memory | `Reserve`/`Commit`/`Decommit`/`Protect`/`DontNeed`/`Truncate` – kleine, klar umrissene Schnittstelle (`virtual_memory.h:95-159`) | kein `mmap`; `virtmem.h` (Adressraum) + `svcMapMemory`/`svcSetMemoryPermission` (Mapping) | **LÜCKE, aber überschaubar** | `virtual_memory_horizon.cc` neu; Dart trennt Reserve/Commit bereits so, wie libnx es anbietet |
+| Compressed Pointers | 4 GB Reservierung, 4 GB aligned, sonst `FATAL` (`virtual_memory_posix.cc:565-577`) | Adressraum-Reservierung ist bei libnx reine Buchhaltung | **RISIKO** | entweder 4-GB-Reservierung umsetzen oder `dart_use_compressed_pointers=false` |
+| Executable Memory (MVP) | im AOT-Product-Mode **nicht nötig** – Instruktionen laufen über `VirtualMemory::ForImagePage`, die die VM nie umschützt | `.text` der NRO ist ohnehin RX | OK (geprüft) | AOT-Instruktionen in die `.nro` linken |
+| Executable Memory (FFI-Callbacks) | RW→RX-Flip *einer* Adresse (`ffi_callback_metadata.cc:152-165`), lazy erst bei `NativeCallable` | `jit.h` bietet RW/RX-*Doppel*mapping, nicht Umschalten | LÜCKE, kein MVP-Blocker | dokumentierte Einschränkung; später ggf. Dual-Mapping-Pfad in der VM |
 | Dynamic Libraries | `dlopen` für ELF-AOT-Weg und `fml::NativeLibrary` | kein `dlopen` | **LÜCKE** | Symbol-Referenz-Weg der Embedder-API nutzen (`embedder.h:2511-2542`); `native_library_horizon.cc` als No-Op |
 | Clock / Timer | `clock_gettime(MONOTONIC)`, hochauflösende Timer | libnx Tick-APIs, Newlib-Clock | WAHRSCH. | Auflösung messen, bevor Task Runner gebaut wird |
 | Environment Variables | `getenv` (Engine-Switches) | begrenzt / leer | WAHRSCH. unkritisch | Konfiguration über eigene Config-Struktur |

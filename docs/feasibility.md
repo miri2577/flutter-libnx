@@ -125,11 +125,24 @@ eine ausreichend große Teilmenge nachzubauen: `virtmem.h` (Adressraum-Reservier
 wird – `jit.h` mit RW/RX-Doppelmapping (`jitCreate`, `jitTransitionToWritable`,
 `jitTransitionToExecutable`, geprüft in `third_party/libnx/nx/include/switch/kernel/jit.h`).
 
-Offene Kernfrage, die als Nächstes beantwortet werden muss:
-**Wie viel von `VirtualMemory` braucht die Dart-VM im AOT-Product-Mode wirklich?**
-Wenn nur Reserve/Commit/Protect für den (nicht ausführbaren) Heap gebraucht wird, ist eine
-libnx-Implementierung überschaubar. Wenn `kDualMapping`/W^X-Pfade zwingend sind, wird es
-deutlich aufwendiger.
+**Nachtrag 2026-08-09 – diese Frage ist beantwortet.** Gemessen am Dart-Checkout
+`02abc578` (Details in `docs/porting-notes.md`):
+
+- Die zu implementierende Schnittstelle ist klein: `Reserve`, `Commit`, `Decommit`,
+  `FreeSubSegment`, `AllocateAligned`, `Protect`, `DontNeed`, `Truncate`, `Init`,
+  `CalculatePageSize` (`virtual_memory.h:95-159`). Die Trennung Reserve/Commit passt
+  strukturell zu libnx (`virtmem` für Adressraum, `svcMapMemory` für echtes Mapping).
+- **Ausführbarer Speicher wird im AOT-Product-Mode nicht gebraucht.** Die
+  Snapshot-Instruktionen laufen über `VirtualMemory::ForImagePage`, deren Region der VM
+  nicht gehört und die sie nie umschützt (`pages.cc:1527`, `virtual_memory.h:143-148`).
+  Ausführbare Heap-Pages entstehen nur beim Kompilieren zur Laufzeit.
+- Einzige Ausnahme: FFI-Callbacks (`NativeCallable`) allokieren Trampolinseiten und
+  flippen sie RW→RX – aber **lazy**, erst bei tatsächlicher Nutzung
+  (`ffi_callback_metadata.cc:103-107`, `dart.cc:393`). Kein MVP-Blocker.
+- Neu aufgetaucht: Compressed Pointers (arm64-Standard) verlangen eine **4 GB große,
+  4 GB ausgerichtete Reservierung**, sonst `FATAL` (`virtual_memory_posix.cc:565-577`).
+  Das ist jetzt das größte Einzelrisiko im Speichermodell. Ausweg vorhanden:
+  `dart_use_compressed_pointers=false`.
 
 ## 5. Threading: unerwartet gut
 
@@ -158,8 +171,9 @@ Switch-Framebuffer-Format ist zu erwarten und wird in Meilenstein 1 praktisch ge
 |---|---|
 | Ist das Ziel prinzipiell erreichbar? | Ja, aber mit erheblichem Aufwand. Kein bekannter fundamentaler Show-Stopper. |
 | Größter Aufwand | Dart-VM-OS-Port (`os_*`, `os_thread_*`, `VirtualMemory`) |
-| Größtes verbleibendes Risiko | `VirtualMemory`-Semantik der Dart-VM vs. Horizon-Speichermodell |
-| Zweitgrößtes Risiko | Build-Host-Ressourcen: 4 Cores / 7 GB RAM für einen Engine-Build sind knapp; Link-Phasen können OOM laufen |
+| Größtes verbleibendes Risiko | 4-GB-Reservierung für Compressed Pointers im Horizon-Adressraum (Ausweg: ohne Compressed Pointers bauen) |
+| Zweitgrößtes Risiko | Build-Host-Ressourcen: 4 Cores, WSL2 mit 7 von 16 GB Host-RAM; Link-Phasen können OOM laufen |
+| Entschärft (Nachtrag) | `VirtualMemory`-Schnittstelle ist klein; ausführbarer Speicher im AOT-Product-Mode nicht nötig |
 | Entschärft | AOT-Laden ohne `dlopen`/`PROT_EXEC`; Software-Renderer vorhanden; Threading vorhanden; Blaupause für neues Target-OS vorhanden |
 | Kein Präzedenzfall gefunden | Es existiert kein bekanntes öffentliches Flutter-auf-Switch-Homebrew-Projekt. Wir haben keine fremden Patches, an denen wir uns orientieren können. |
 
@@ -167,8 +181,8 @@ Switch-Framebuffer-Format ist zu erwarten und wird in Meilenstein 1 praktisch ge
 
 1. devkitPro installieren, `hello_libnx.nro` bauen – klärt Toolchain und Framebuffer
    praktisch (Meilenstein 1).
-2. Dart-SDK-Quellen auschecken, `virtual_memory_posix.cc` und ihre Aufrufer im
-   AOT-Product-Pfad lesen – klärt das größte Risiko.
+2. ~~Dart-SDK-Quellen auschecken, `virtual_memory_posix.cc` und ihre Aufrufer im
+   AOT-Product-Pfad lesen~~ – **erledigt 2026-08-09**, siehe Nachtrag in §4.
 3. `gen_snapshot` der gepinnten Version besorgen und `app-aot-assembly` für arm64 erzeugen,
    dann testweise mit devkitA64 assemblieren und in eine `.nro` linken – klärt den
    AOT-Weg praktisch, *bevor* die Engine überhaupt gebaut werden muss.
