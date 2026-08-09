@@ -64,8 +64,11 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] `flutter/shell/platform/BUILD.gn` kennt horizon
 - [x] **`gn gen` läuft durch** – 918 Targets aus 304 Dateien
 - [x] `pkg-config` ohne root beschafft (aus dem Container-Image nach `~/bin`)
+- [x] devkitA64 übersetzt Engine-Quellen (erste `.o`-Dateien liegen vor)
+- [x] `FML_OS_HORIZON` in `fml/build_config.h`
+- [ ] **fml kompiliert** – aktuell bei 12 von 515 Objekten;
+      Stand: `fml/backtrace.cc` braucht `execinfo.h` (glibc-Backtraces)
 - [ ] Dart-VM-Portierungsdateien angelegt
-- [ ] fml kompiliert
 - [ ] Dart VM kompiliert
 - [ ] Skia (Software) kompiliert
 - [ ] Engine linkt

@@ -214,6 +214,105 @@ def patch_dart_runtime(src: str) -> None:
     )
 
 
+def patch_cxx_disable_modules(src: str) -> None:
+    path = os.path.join(src, "build", "config", "compiler", "BUILD.gn")
+    # -Xclang und -fno-cxx-modules kennt GCC nicht. Der Kommentar daneben sagt
+    # selbst, dass es um ObjC-Module in bestimmten Clang-Versionen geht - fuer
+    # eine GCC-Toolchain ist beides gegenstandslos. -fno-modules bleibt, das
+    # versteht GCC.
+    replace_once(
+        path,
+        '  disable_modules_flags = [\n'
+        '    "-fno-modules",\n'
+        '\n'
+        '    # Some Clang versions do not disable ObjC modules (as tested by\n'
+        '    # __has_feature(objc_modules)) when just -fno-modules is present.\n'
+        '    "-Xclang",\n'
+        '    "-fno-cxx-modules",\n'
+        '  ]',
+        '  disable_modules_flags = [ "-fno-modules" ]\n'
+        '  if (is_clang) {\n'
+        '    # Some Clang versions do not disable ObjC modules (as tested by\n'
+        '    # __has_feature(objc_modules)) when just -fno-modules is present.\n'
+        '    # GCC kennt weder -Xclang noch -fno-cxx-modules.\n'
+        '    disable_modules_flags += [\n'
+        '      "-Xclang",\n'
+        '      "-fno-cxx-modules",\n'
+        '    ]\n'
+        '  }',
+        "build/config/compiler/BUILD.gn (cxx_disable_modules)",
+    )
+
+
+def patch_fml_build_config(src: str) -> None:
+    path = os.path.join(src, "flutter", "fml", "build_config.h")
+    # __SWITCH__ setzt die GN-Compilerkonfiguration (siehe patch_compiler_config).
+    #
+    # FML_OS_POSIX wird bewusst NICHT gesetzt, obwohl newlib und libnx grosse
+    # Teile von POSIX liefern. Die POSIX-Quellen von fml setzen mmap
+    # (mapping_posix.cc) und dlopen (native_library_posix.cc) voraus, und beides
+    # fehlt auf Horizon. Jede POSIX-Faehigkeit wird einzeln freigeschaltet -
+    # das ist der ganze Sinn eines eigenen Targets.
+    replace_once(
+        path,
+        "#elif defined(__EMSCRIPTEN__)\n"
+        "#define FML_OS_EMSCRIPTEN\n"
+        "#else",
+        "#elif defined(__EMSCRIPTEN__)\n"
+        "#define FML_OS_EMSCRIPTEN\n"
+        "#elif defined(__SWITCH__)\n"
+        "#define FML_OS_HORIZON 1\n"
+        "#else",
+        "flutter/fml/build_config.h",
+    )
+
+
+def patch_werror(src: str) -> None:
+    path = os.path.join(src, "build", "config", "compiler", "BUILD.gn")
+    # QNX nimmt sich von -Werror bereits aus, und aus demselben Grund: Die
+    # Warnungsfreiheit der Engine ist gegen Clang geprueft, nicht gegen GCC.
+    # GCC meldet etwa nach einem switch ueber alle Enum-Werte trotzdem
+    # "control reaches end of non-void function" (fml/cpu_affinity.cc:86).
+    #
+    # Das ist eine Bootstrap-Massnahme, kein Dauerzustand: Sobald die
+    # Portierung steht, gehoert geprueft, welche dieser Warnungen echte Fehler
+    # sind. Die Alternative waere der Clang-Weg ueber custom_toolchain
+    # (siehe docs/gn-target-horizon.md) - der diese Fehlerklasse komplett
+    # vermeiden wuerde.
+    replace_once(
+        path,
+        "  if (!is_qnx) {\n"
+        '    default_warning_flags += [\n'
+        '      "-Werror",  # Warnings as errors.\n'
+        "    ]\n"
+        "  }",
+        "  if (!is_qnx && !is_horizon) {\n"
+        '    default_warning_flags += [\n'
+        '      "-Werror",  # Warnings as errors.\n'
+        "    ]\n"
+        "  }",
+        "build/config/compiler/BUILD.gn (-Werror)",
+    )
+
+
+def patch_missing_includes(src: str) -> None:
+    """Fehlende Standard-Includes, die unter glibc transitiv mitkamen.
+
+    newlib zieht deutlich weniger indirekt herein als glibc. Das sind echte
+    Portabilitaetsluecken im Upstream-Code, keine Horizon-Eigenheiten - sie
+    faenden sich auf jeder schlanken libc.
+    """
+    path = os.path.join(src, "flutter", "fml", "message_loop_task_queues.cc")
+    replace_once(
+        path,
+        '#include "flutter/fml/message_loop_task_queues.h"\n',
+        '#include "flutter/fml/message_loop_task_queues.h"\n'
+        "\n"
+        "#include <climits>  // ULONG_MAX; unter glibc transitiv, unter newlib nicht\n",
+        "flutter/fml/message_loop_task_queues.cc",
+    )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -255,12 +354,20 @@ def main() -> int:
 
     print("==> build/config/compiler/BUILD.gn")
     patch_compiler_config(SRC)
+    patch_cxx_disable_modules(SRC)
+    patch_werror(SRC)
 
     print("==> flutter/third_party/dart/runtime/BUILD.gn")
     patch_dart_runtime(SRC)
 
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)
+
+    print("==> flutter/fml/build_config.h")
+    patch_fml_build_config(SRC)
+
+    print("==> fehlende Includes")
+    patch_missing_includes(SRC)
     return 0
 
 

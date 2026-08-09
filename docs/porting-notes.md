@@ -68,6 +68,36 @@ liefert, ist zugleich die Landkarte des Ports:
 ist der Aufwand, den `docs/feasibility.md` §4 vorhergesagt hat. Ab hier wird nicht mehr
 konfiguriert, sondern portiert.
 
+### Fortsetzung: `gn gen` läuft, Übersetzung beginnt
+
+| # | Fehler | Art | Lösung |
+|---|---|---|---|
+| 9 | `Unknown target_os: horizon` (Dart) | Konfiguration | `DART_TARGET_OS_HORIZON` in `runtime/BUILD.gn` |
+| 10 | `Unsupported ARM OS` (zlib) | Plattformlücke | NEON/CRC32 für horizon aus – die OS-spezifische CPU-Erkennung (`getauxval`) fehlt |
+| 11 | `pkg-config` fehlt | Umgebung | ohne root aus dem Container-Image nach `~/bin` |
+| — | **`gn gen` fertig: 918 Targets** | | |
+| 12 | `-Xclang`, `-fno-cxx-modules` | Toolchain | nur noch unter `is_clang` |
+| 13 | `#error Please add support for your platform` | Quellcode | `FML_OS_HORIZON` über `__SWITCH__` |
+| 14 | `control reaches end of non-void function` | Toolchain | `-Werror` aus, wie QNX es schon tut |
+| 15 | `ULONG_MAX` nicht deklariert | Portabilität | `<climits>` ergänzt |
+| 16 | `execinfo.h` fehlt | **Plattformlücke** | offen – glibc-Backtraces gibt es auf Horizon nicht |
+
+**`-Werror`:** QNX nimmt sich davon bereits aus (`compiler/BUILD.gn:749`), und aus genau
+demselben Grund – die Warnungsfreiheit der Engine ist gegen Clang geprüft, nicht gegen GCC.
+GCC meldet etwa nach einem `switch` über sämtliche Enum-Werte trotzdem
+„control reaches end of non-void function" (`fml/cpu_affinity.cc:86`). Das ist eine
+Bootstrap-Maßnahme, kein Dauerzustand.
+
+**Beobachtung zur Toolchainwahl:** Die Fehler 12 und 14 wären mit Clang nicht aufgetreten.
+Sollte sich diese Klasse häufen, ist der `custom_toolchain`-Weg aus
+`docs/gn-target-horizon.md` die Alternative – Clang gegen das devkitA64-Sysroot statt GCC.
+Bisher sind es zwei Fälle; das rechtfertigt den Wechsel noch nicht.
+
+**Fehler 15 und 16 sind verschiedene Dinge.** `<climits>` ist eine echte
+Portabilitätslücke im Upstream-Code, die auf jeder schlanken libc auffiele – newlib zieht
+weniger transitiv herein als glibc. `execinfo.h` dagegen ist eine Funktion, die Horizon
+schlicht nicht hat.
+
 **Zwei Lehren aus eigenen Fehlern:** Das Einfügen von GN-Zweigen per Index-Schneiden hat
 zweimal die schließende Klammer verschluckt, weil der eingefügte Block die ersetzte
 Klammer selbst mitbringen muss. Seither nur noch wörtliche Textersetzung mit vollständigem
