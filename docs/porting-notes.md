@@ -148,21 +148,48 @@ Objektdateien, keine Fehler.
 Inhalt hinter `#if defined(DART_HOST_OS_...)`. Für Horizon sind `os_linux.o`, `os_win.o`
 und Verwandte also leere Objektdateien. Es gibt schlicht kein `os_horizon.cc`.
 
-Gemessen an den undefinierten Symbolen der erzeugten Objekte:
+**Korrektur der ersten Messung.** Zunächst hatte ich nur die undefinierten Symbole
+gezählt – das überschätzt deutlich, weil Querverweise zwischen Objektdateien der Normalfall
+sind. Nach Abzug der anderswo definierten Symbole (1739 undefiniert, davon 1177 anderswo
+definiert) bleibt:
 
 | Bereich | fehlende Funktionen |
 |---|---|
-| `dart::OS::` | 17 |
-| `dart::OSThread::` | 20 |
-| `dart::VirtualMemory::` | 8 |
+| `dart::OS::` | 16 |
+| `dart::OSThread::` | 11 |
+| `dart::VirtualMemory::` | 7 |
+| `dart::CpuInfo` | 5 |
+| `dart::NativeSymbolResolver` | 5 |
 | `dart::ThreadInterrupter` | **0** |
 
-45 Funktionen also. Dass `ThreadInterrupter` bei null steht, bestätigt die frühere
-Annahme: Der signalbasierte Profiler entfällt im Product-Modus tatsächlich.
+44 Plattformfunktionen. Gegenüber der ersten Schätzung sind `CpuInfo` und
+`NativeSymbolResolver` hinzugekommen, während ein Teil der `OSThread`-Funktionen bereits
+in `os_thread.cc` definiert war. Dass `ThreadInterrupter` bei null steht, bestätigt die
+frühere Annahme: Der signalbasierte Profiler entfällt im Product-Modus tatsächlich.
 
-Die 17 `OS::`-Funktionen sind überwiegend harmlos (`GetCurrentTimeMicros`, `Sleep`,
-`Print`, `Abort`). Die 8 `VirtualMemory::`-Funktionen sind der Kern – dort entscheidet
-sich die 4-GB-Frage der Compressed Pointers.
+Die übrigen 562 offenen Symbole stammen aus anderen Zielen (`dart::Api::`,
+`dart::BaseTextBuffer::` und Verwandte) und lösen sich beim Zusammenlinken auf.
+
+### Entscheidung zum Speichermodell
+
+`virtual_memory_horizon.cc` nimmt den einfachsten Weg, der die Zusicherungen erfüllt:
+ausgerichtete Anforderungen über `memalign` aus dem Prozess-Heap. Damit fallen Reserve und
+Commit zusammen, `Protect` bleibt wirkungslos und `FreeSubSegment` meldet ehrlich `false`.
+
+Im AOT-Product-Modus ist das vertretbar: Ausführbarer Speicher wird nicht gebraucht – die
+Snapshot-Instruktionen liegen in der `.text` der NRO –, und Schreibschutz für Code-Seiten
+betrifft nur zur Laufzeit erzeugten Code, den es hier nicht gibt.
+
+**Damit ist die 4-GB-Frage entschieden, und zwar gegen Compressed Pointers.** Deren
+Reservierung würde mit dieser Fassung 4 GB tatsächlich belegen statt nur Adressraum zu
+reservieren – auf einer Konsole mit 4 GB RAM aussichtslos. Der Build setzt deshalb
+`dart_use_compressed_pointers=false`, und die Datei bricht mit `#error` ab, falls diese
+Verbindung je unbemerkt zerfällt.
+
+Das ist eine bewusste Bootstrap-Entscheidung, kein Endzustand: libnx hat mit `virtmem` und
+`svcMapMemory` die Bausteine für eine echte Trennung von Reservierung und Abbildung. Ohne
+Compressed Pointers kostet Dart mehr Speicher pro Objektzeiger – was auf einem Gerät mit
+knappem RAM irgendwann zurückkommt.
 
 **Fehler 15 und 16 sind verschiedene Dinge.** `<climits>` ist eine echte
 Portabilitätslücke im Upstream-Code, die auf jeder schlanken libc auffiele – newlib zieht
