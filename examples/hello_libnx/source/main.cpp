@@ -7,6 +7,7 @@
 #include <switch.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "flutter_libnx/log.h"
@@ -15,6 +16,84 @@
 namespace {
 
 constexpr const char* kLogPath = "sdmc:/switch/flutter-libnx/hello_libnx.log";
+
+// Gesammelte Messwerte. Werden nach dem Beenden auf dem Bildschirm angezeigt,
+// weil die Logkanäle (nxlink, SD) nicht in jeder Umgebung verfügbar sind – der
+// Bildschirm dagegen immer.
+struct Diagnostics {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride = 0;
+  uint32_t frames = 0;
+  bool nxlink = false;
+};
+
+const char* AppletTypeName(AppletType type) {
+  switch (type) {
+    case AppletType_Application:       return "Application (Titeluebernahme)";
+    case AppletType_SystemApplication: return "SystemApplication";
+    case AppletType_LibraryApplet:     return "LibraryApplet (Applet-Modus)";
+    case AppletType_SystemApplet:      return "SystemApplet";
+    case AppletType_OverlayApplet:     return "OverlayApplet";
+    case AppletType_None:              return "None";
+    case AppletType_Default:           return "Default";
+  }
+  return "unbekannt";
+}
+
+// Zeigt die Messwerte auf der Konsole an. Das geht erst, nachdem der
+// Framebuffer geschlossen wurde – beide beanspruchen dasselbe Fenster.
+void ShowSummary(const Diagnostics& diag) {
+  consoleInit(nullptr);
+
+  std::printf("\n  flutter-libnx / hello_libnx – Messwerte\n");
+  std::printf("  =======================================\n\n");
+
+  std::printf("  Aufloesung      : %u x %u\n", diag.width, diag.height);
+  std::printf("  Stride          : %u Bytes\n", diag.stride);
+  std::printf("  erwartet (w*4)  : %u Bytes\n", diag.width * 4);
+  if (diag.stride == diag.width * 4) {
+    std::printf("  -> passt: Flutter-Puffer kann direkt durchgereicht werden\n");
+  } else {
+    std::printf("  -> ABWEICHUNG: zeilenweises Umkopieren noetig\n");
+  }
+
+  std::printf("\n  Frames gerendert: %u\n", diag.frames);
+  std::printf("  nxlink verbunden: %s\n", diag.nxlink ? "ja" : "nein");
+  std::printf("  Logdatei        : %s\n", kLogPath);
+
+  std::printf("\n  Laufzeitumgebung: %s\n", AppletTypeName(appletGetAppletType()));
+
+  u64 total = 0;
+  u64 used = 0;
+  const Result rc_total =
+      svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+  const Result rc_used =
+      svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+  if (R_SUCCEEDED(rc_total) && R_SUCCEEDED(rc_used)) {
+    // u64 ist auf AArch64 ein unsigned long, nicht long long.
+    std::printf("  Speicher gesamt : %lu MB\n", total / (1024 * 1024));
+    std::printf("  davon belegt    : %lu MB\n", used / (1024 * 1024));
+  } else {
+    std::printf("  Speicher        : svcGetInfo fehlgeschlagen (0x%08x/0x%08x)\n",
+                rc_total, rc_used);
+  }
+
+  std::printf("\n  Plus zum Beenden.\n");
+  consoleUpdate(nullptr);
+
+  PadState pad;
+  padInitializeDefault(&pad);
+  while (appletMainLoop()) {
+    padUpdate(&pad);
+    if (padGetButtonsDown(&pad) & HidNpadButton_Plus) {
+      break;
+    }
+    consoleUpdate(nullptr);
+  }
+
+  consoleExit(nullptr);
+}
 
 void FillRect(uint8_t* pixels, uint32_t stride, uint32_t x0, uint32_t y0,
               uint32_t w, uint32_t h, uint32_t rgba) {
@@ -58,6 +137,10 @@ int main(int argc, char* argv[]) {
 
   bool first_frame_logged = false;
   uint32_t frame = 0;
+  Diagnostics diag;
+  diag.width = platform.width();
+  diag.height = platform.height();
+  diag.nxlink = flutter_libnx::LogHasNxlink();
 
   while (!platform.ShouldQuit()) {
     platform.PollEvents();
@@ -100,13 +183,19 @@ int main(int argc, char* argv[]) {
     if (!first_frame_logged) {
       LOG_INFO("first frame presented (stride=%u bytes, erwartet %u)", stride,
                platform.width() * 4);
+      diag.stride = stride;
       first_frame_logged = true;
     }
     ++frame;
   }
 
+  diag.frames = frame;
   LOG_INFO("Schleife beendet nach %u Frames", frame);
+
+  // Framebuffer muss zuerst weg, sonst kann die Konsole das Fenster nicht belegen.
   platform.Shutdown();
+  ShowSummary(diag);
+
   flutter_libnx::LogShutdown();
   return 0;
 }

@@ -34,9 +34,19 @@ erscheint das erwartete Bild, der Balken wandert, A färbt die Fläche.
 Übertragung, Start, Framebuffer, Eingabe. Damit ist die Plattformschicht, auf der der
 Embedder aufsetzt, kein Papier mehr.
 
-**Zur Übertragung:** `nxlink` aus dem Container braucht `--network host`. Ohne den
-Schalter scheitert der Verbindungsaufbau („Connection to … failed"), obwohl Port 28280
-von Windows aus offen ist – die Docker-NAT verträgt den Netloader-Handshake nicht.
+**Zur Übertragung, zwei Stolpersteine:**
+
+1. `nxlink` aus dem Container braucht `--network host`. Ohne den Schalter scheitert der
+   Verbindungsaufbau („Connection to … failed") – die Docker-NAT verträgt den
+   Netloader-Handshake nicht.
+2. **Den Netloader-Port nicht vorher anpingen.** Ein `Test-NetConnection` auf Port 28280
+   öffnet eine TCP-Verbindung, und der Netloader nimmt nur eine an – die Probe beendet
+   die Sitzung, und der anschließende echte Upload scheitert. Direkt hochladen und
+   `-r` für Wiederholungen nutzen.
+
+**Applet-Modus-Eigenheit (nicht unser Code):** Beim ersten Start aus hbmenu erscheint
+häufig „Error getting name length: err=11 / No more processes"; beim zweiten Versuch
+klappt es. `err=11` ist `EAGAIN`, die Meldung stammt aus hbmenu selbst.
 
 **Noch offen:** Logausgabe wurde noch nicht gesehen, sauberes Beenden über Plus noch nicht
 bestätigt, und der Framebuffer-Stride ist noch nicht gegen `width * 4` geprüft. Genau
