@@ -28,23 +28,6 @@ echo "==> Arbeitsverzeichnis $ENGINE_DIR"
 mkdir -p "$ENGINE_DIR"
 cd "$ENGINE_DIR"
 
-# download_android_deps spart mehrere GB und einige Minuten; wir bauen kein
-# Android. Dasselbe gilt für das Emscripten-SDK.
-cat > .gclient <<'EOF'
-solutions = [
-  {
-    "managed": False,
-    "name": "flutter",
-    "url": "https://github.com/flutter/flutter.git",
-    "deps_file": "DEPS",
-    "custom_vars": {
-      "download_android_deps": False,
-      "download_emsdk": False,
-    },
-  },
-]
-EOF
-
 echo "==> flutter/flutter auschecken ($FLUTTER_REV)"
 if [ ! -d flutter/.git ]; then
   git clone --filter=blob:none https://github.com/flutter/flutter.git flutter
@@ -53,7 +36,36 @@ cd flutter
 git fetch --filter=blob:none origin "$FLUTTER_REV" 2>/dev/null || git fetch origin
 git checkout -q "$FLUTTER_REV"
 echo "    HEAD: $(git rev-parse --short HEAD) ($(git describe --tags 2>/dev/null || echo 'kein Tag'))"
-cd ..
+
+# Die .gclient gehört laut engine/scripts/standard.gclient in die Wurzel des
+# Repositories, mit "name": ".". Liegt sie eine Ebene darüber, laufen die Hooks
+# aus DEPS im falschen Verzeichnis und scheitern mit
+# "can't open file .../engine/engine/src/build/...".
+#
+# download_android_deps und download_fuchsia_deps sind auf Linux/x64 per
+# Vorgabe an (DEPS:96 und :112) und kosten mehrere GB. Wir bauen weder das eine
+# noch das andere.
+cat > .gclient <<'EOF'
+solutions = [
+  {
+    "custom_deps": {},
+    "deps_file": "DEPS",
+    "managed": False,
+    "name": ".",
+    "safesync_url": "",
+    "url": "https://github.com/flutter/flutter.git",
+    "custom_vars": {
+      "download_android_deps": False,
+      "download_fuchsia_deps": False,
+      "download_emsdk": False,
+    },
+  },
+]
+EOF
+
+# Eine eventuell aus einem früheren Versuch verbliebene .gclient eine Ebene
+# höher würde gclient in die Irre führen.
+rm -f "$ENGINE_DIR/.gclient" "$ENGINE_DIR/.gclient_entries"
 
 echo "==> gclient sync (das dauert; bei 100 Mbit/s grob 30-90 Minuten)"
 gclient sync -D --no-history --shallow
