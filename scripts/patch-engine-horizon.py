@@ -609,6 +609,138 @@ def patch_dart_globals(src: str) -> None:
     )
 
 
+def patch_dart_platform_headers(src: str, repo: str) -> None:
+    """Die vier plattformabhängigen Header der Dart-VM.
+
+    Zwei davon brauchen nur einen zusätzlichen Zweig, weil libnx über die
+    Newlib-Syscalls echte pthreads liefert. Die anderen beiden verlangen eine
+    eigene Datei.
+    """
+    import shutil
+
+    runtime = os.path.join(src, "flutter", "third_party", "dart", "runtime")
+    files = os.path.join(repo, "patches", "flutter-engine", "files", "dart")
+
+    for rel, name in (
+        (os.path.join("platform"), "utils_horizon.h"),
+        (os.path.join("vm"), "os_thread_horizon.h"),
+    ):
+        shutil.copyfile(os.path.join(files, rel, name),
+                        os.path.join(runtime, rel, name))
+        print(f"    kopiert: dart/runtime/{rel}/{name}")
+
+    # platform/utils.h – eigene Datei.
+    replace_once(
+        os.path.join(runtime, "platform", "utils.h"),
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "platform/utils_win.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "platform/utils_win.h"\n'
+        "#elif defined(DART_HOST_OS_HORIZON)\n"
+        '#include "platform/utils_horizon.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        "dart platform/utils.h",
+    )
+
+    # vm/os_thread.h – eigene Datei.
+    replace_once(
+        os.path.join(runtime, "vm", "os_thread.h"),
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "vm/os_thread_win.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "vm/os_thread_win.h"\n'
+        "#elif defined(DART_HOST_OS_HORIZON)\n"
+        '#include "vm/os_thread_horizon.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        "dart vm/os_thread.h",
+    )
+
+    # platform/threads.h und platform/synchronization.h: Horizon einfach in die
+    # pthread-Zweige aufnehmen. Das Muster kommt in threads.h dreimal vor.
+    pthread_condition = (
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_FUCHSIA) ||            \\\n"
+        "    defined(DART_HOST_OS_MACOS) || defined(DART_HOST_OS_ANDROID)"
+    )
+    pthread_condition_with_horizon = (
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_FUCHSIA) ||            \\\n"
+        "    defined(DART_HOST_OS_MACOS) || defined(DART_HOST_OS_ANDROID) ||            \\\n"
+        "    defined(DART_HOST_OS_HORIZON)"
+    )
+    threads_path = os.path.join(runtime, "platform", "threads.h")
+    with open(threads_path, encoding="utf-8") as handle:
+        text = handle.read()
+    if "DART_HOST_OS_HORIZON" in text:
+        print("    schon gepatcht: dart platform/threads.h")
+    else:
+        count = text.count(pthread_condition)
+        text = text.replace(pthread_condition, pthread_condition_with_horizon)
+        with open(threads_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        print(f"    gepatcht: dart platform/threads.h ({count} Stellen)")
+
+    replace_once(
+        os.path.join(runtime, "platform", "synchronization.h"),
+        "#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_FUCHSIA) ||          \\\n"
+        "    defined(DART_HOST_OS_MACOS) || defined(DART_HOST_OS_ANDROID)",
+        "#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_FUCHSIA) ||          \\\n"
+        "    defined(DART_HOST_OS_MACOS) || defined(DART_HOST_OS_ANDROID) ||            \\\n"
+        "    defined(DART_HOST_OS_HORIZON)",
+        "dart platform/synchronization.h",
+    )
+
+
+def patch_dart_signal_handler(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "vm",
+                        "signal_handler.h")
+    # Horizon kennt weder ucontext_t noch mcontext_t; einen signalbasierten
+    # Profiler gibt es dort nicht. Windows loest dasselbe Problem mit reinen
+    # Deklarationen - wir folgen dem. siginfo_t und sigset_t liefert newlib.
+    replace_once(
+        path,
+        "#elif defined(DART_HOST_OS_FUCHSIA)\n"
+        "#include <signal.h>    // NOLINT\n"
+        "#include <ucontext.h>  // NOLINT\n"
+        "#endif",
+        "#elif defined(DART_HOST_OS_FUCHSIA)\n"
+        "#include <signal.h>    // NOLINT\n"
+        "#include <ucontext.h>  // NOLINT\n"
+        "#elif defined(DART_HOST_OS_HORIZON)\n"
+        "// Horizon hat kein ucontext_t/mcontext_t und keinen signalbasierten\n"
+        "// Profiler. Wie unter Windows reicht die Deklaration, damit die\n"
+        "// Schnittstelle uebersetzt.\n"
+        "#include <signal.h>  // NOLINT\n"
+        "struct mcontext_t;\n"
+        "#endif",
+        "dart vm/signal_handler.h",
+    )
+
+
+def patch_dart_version_string(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "vm",
+                        "dart.cc")
+    # Reiner Anzeigetext in Dart::VersionString().
+    replace_once(
+        path,
+        "#elif defined(DART_TARGET_OS_WINDOWS)\n"
+        '    buffer.AddString(" windows");\n'
+        "#else\n"
+        "#error What operating system?",
+        "#elif defined(DART_TARGET_OS_WINDOWS)\n"
+        '    buffer.AddString(" windows");\n'
+        "#elif defined(DART_TARGET_OS_HORIZON)\n"
+        '    buffer.AddString(" horizon");\n'
+        "#else\n"
+        "#error What operating system?",
+        "dart vm/dart.cc (VersionString)",
+    )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -659,6 +791,12 @@ def main() -> int:
 
     print("==> Dart-VM: platform/globals.h")
     patch_dart_globals(SRC)
+
+    print("==> Dart-VM: plattformabhängige Header")
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    patch_dart_platform_headers(SRC, repo_root)
+    patch_dart_signal_handler(SRC)
+    patch_dart_version_string(SRC)
 
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)

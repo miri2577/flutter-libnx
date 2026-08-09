@@ -73,10 +73,18 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] libnx-Include-Pfad und Switch-Architekturflags in der Compilerkonfiguration
       (`-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -ftls-model=local-exec`)
 - [x] Horizon in allen vier OS-Erkennungen von `dart/runtime/platform/globals.h`
-- [ ] **Dart-VM-Portierungsdateien** – vier Header verlangen eine Horizon-Variante:
-      `platform/utils.h`, `platform/threads.h`, `platform/synchronization.h`,
-      `vm/os_thread.h`, dazu die passenden `.cc`-Dateien
-- [ ] Dart VM kompiliert
+- [x] **die vier plattformabhängigen Dart-Header** – `platform/utils.h`,
+      `platform/threads.h`, `platform/synchronization.h`, `vm/os_thread.h`;
+      zwei brauchten nur einen pthread-Zweig, zwei eine eigene Datei
+      (`utils_horizon.h`, `os_thread_horizon.h`)
+- [x] Build läuft im **Release/AOT-Modus** (`flutter_runtime_mode=release`,
+      `dart_runtime_mode=release`) – vorher lief versehentlich Debug/JIT
+- [x] **`libdart_vm_aotruntime_product` übersetzt vollständig** – 675 Ziele, 184
+      Objektdateien, keine Fehler
+- [ ] **Dart VM linkt** – dafür fehlen die eigentlichen Implementierungen. Gemessen
+      an den undefinierten Symbolen: **17× `dart::OS::`, 20× `dart::OSThread::`,
+      8× `dart::VirtualMemory::`**, zusammen 45 Funktionen. `ThreadInterrupter`
+      ist bei 0, der Profiler entfällt im Product-Modus also tatsächlich.
 - [ ] Skia (Software) kompiliert
 - [ ] Engine linkt
 

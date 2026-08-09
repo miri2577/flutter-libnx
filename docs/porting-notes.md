@@ -121,6 +121,49 @@ liest die Datei vollständig in den Heap statt sie abzubilden. Das kostet Speich
 verhindert schreibbare Abbildungen – Letzteres schlägt bewusst mit Protokolleintrag fehl,
 statt eine abweichende Zusicherung zu liefern.
 
+### Die Dart-VM übersetzt – und was das nicht heißt
+
+Die vier plattformabhängigen Header waren weniger Arbeit als erwartet: `platform/threads.h`
+und `platform/synchronization.h` brauchten nur einen zusätzlichen Zweig, weil libnx über
+die Newlib-Syscalls echte pthreads liefert. `platform/utils.h` und `vm/os_thread.h`
+bekamen eigene Dateien.
+
+`utils_horizon.h` kommt ohne `<endian.h>` und `<byteswap.h>` aus – newlib hat beides
+nicht – und benutzt stattdessen `__builtin_bswap*` mit `__BYTE_ORDER__`. `strerror_r` ist
+ebenfalls nicht deklariert; `strerror` ist vertretbar, weil newlib für bekannte Codes
+konstante Zeichenketten liefert und der Rückfallpuffer in der pro Thread geführten
+Reentrancy-Struktur liegt.
+
+**Ein Konfigurationsfehler, der lange unbemerkt lief:** Der Build lief bis hierher im
+Debug/JIT-Modus (`-DFLUTTER_RUNTIME_MODE=1`, `-DFLUTTER_JIT_RUNTIME=1`). Erst
+`flutter_runtime_mode="release"` **und** `dart_runtime_mode="release"` schalten auf
+Release/AOT. Letzteres ist ein eigenes GN-Argument mit Vorgabe `"develop"`, das die
+Flutter-Seite nicht automatisch mitsetzt. Nebenwirkung: Dart schließt damit Perfetto und
+den Profiler aus, die beide auf Horizon nicht übersetzen.
+
+**Ergebnis:** `libdart_vm_aotruntime_product` übersetzt vollständig – 675 Ziele, 184
+Objektdateien, keine Fehler.
+
+**Und was das nicht heißt.** Dart übersetzt *alle* `os_*.cc`, aber jede verbirgt ihren
+Inhalt hinter `#if defined(DART_HOST_OS_...)`. Für Horizon sind `os_linux.o`, `os_win.o`
+und Verwandte also leere Objektdateien. Es gibt schlicht kein `os_horizon.cc`.
+
+Gemessen an den undefinierten Symbolen der erzeugten Objekte:
+
+| Bereich | fehlende Funktionen |
+|---|---|
+| `dart::OS::` | 17 |
+| `dart::OSThread::` | 20 |
+| `dart::VirtualMemory::` | 8 |
+| `dart::ThreadInterrupter` | **0** |
+
+45 Funktionen also. Dass `ThreadInterrupter` bei null steht, bestätigt die frühere
+Annahme: Der signalbasierte Profiler entfällt im Product-Modus tatsächlich.
+
+Die 17 `OS::`-Funktionen sind überwiegend harmlos (`GetCurrentTimeMicros`, `Sleep`,
+`Print`, `Abort`). Die 8 `VirtualMemory::`-Funktionen sind der Kern – dort entscheidet
+sich die 4-GB-Frage der Compressed Pointers.
+
 **Fehler 15 und 16 sind verschiedene Dinge.** `<climits>` ist eine echte
 Portabilitätslücke im Upstream-Code, die auf jeder schlanken libc auffiele – newlib zieht
 weniger transitiv herein als glibc. `execinfo.h` dagegen ist eine Funktion, die Horizon

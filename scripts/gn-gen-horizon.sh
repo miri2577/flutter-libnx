@@ -28,8 +28,12 @@ ENGINE_VERSION="${ENGINE_VERSION:-db50e20168db8fee486b9abf32fc912de3bc5b6a}"
 SKIA_VERSION="${SKIA_VERSION:-a183ded9ad67d998a5b0fe4cd86d3ef5402ffb45}"
 DART_VERSION="${DART_VERSION:-02abc57898bebc334a997e609ce5827c8ef207d7}"
 
+# flutter_runtime_mode=release ist die Kernentscheidung des Projekts: Dart AOT
+# statt JIT. Nebenbei schaltet Dart dadurch Perfetto und den Profiler ab
+# (runtime/runtime_args.gni:98), die auf Horizon ohnehin nicht übersetzen.
 "$GN" gen "$OUT" \
   --args="target_os=\"horizon\" target_cpu=\"arm64\" is_debug=false \
+flutter_runtime_mode=\"release\" dart_runtime_mode=\"release\" \
 devkitpro_root=\"$DEVKITPRO\" engine_version=\"$ENGINE_VERSION\" \
 content_hash=\"$ENGINE_VERSION\" skia_version=\"$SKIA_VERSION\" \
 dart_version=\"$DART_VERSION\"" \
