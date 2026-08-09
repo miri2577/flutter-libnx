@@ -45,12 +45,23 @@ Bootstrap-Version; das Upgrade-Risiko ist in `docs/feasibility.md` §2 beschrieb
 
 ## Wie baue ich das Projekt?
 
-Noch gar nicht. Voraussetzung ist zunächst die Toolchain:
+Voraussetzung ist die Toolchain (einmalig, braucht ein interaktives Terminal wegen sudo):
 
 ```bash
-# in WSL (Ubuntu 24.04), benötigt sudo
-./scripts/setup-devkitpro.sh
+# in WSL (Ubuntu 24.04)
+cd /mnt/e/flutter-libnx && ./scripts/setup-devkitpro.sh
 ```
+
+Danach das Beispiel aus Meilenstein 1:
+
+```bash
+export DEVKITPRO=/opt/devkitpro
+cd /mnt/e/flutter-libnx/examples/hello_libnx && make
+```
+
+Ergebnis wäre `examples/hello_libnx/hello_libnx.nro`. **Das ist bisher nie gelaufen** –
+der Code ist geschrieben und alle libnx-Aufrufe sind gegen die echten Header geprüft,
+aber ohne Toolchain gibt es keinen Compilerdurchlauf. Siehe `docs/status.md`.
 
 Referenzquellen (libnx, `embedder.h` der gepinnten Version) neu holen:
 

@@ -21,11 +21,14 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 
 ## Meilenstein 1 – Minimaler libnx Host
 
+- [x] Quellcode geschrieben (`embedder/src/log.cpp`, `embedder/src/platform/switch_platform.cpp`,
+      `examples/hello_libnx/`) – **ungebaut**, Toolchain fehlt noch
+- [x] alle benutzten libnx-Symbole gegen die echten Header verifiziert (24 Stück)
 - [ ] `hello_libnx.nro` kompiliert
 - [ ] startet auf Hardware
-- [ ] Logging (Konsole/nxlink)
-- [ ] Controller-Eingabe
-- [ ] sauberes Beenden
+- [ ] Logging (nxlink/Datei) liefert Ausgabe
+- [ ] Controller-Eingabe reagiert
+- [ ] sauberes Beenden über Plus
 
 ## Meilenstein 2 – Engine Cross-Compile PoC
 
