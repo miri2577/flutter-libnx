@@ -82,11 +82,21 @@ void ShowSummary(const Diagnostics& diag) {
   std::printf("\n  Plus zum Beenden.\n");
   consoleUpdate(nullptr);
 
+  // Achtung: Ein frisch initialisierter PadState hat einen leeren Vorzustand.
+  // Ist Plus beim Eintritt noch gedrückt – und das ist es, weil wir gerade
+  // deswegen hier sind –, meldet padGetButtonsDown es als neuen Druck und die
+  // Schleife bricht sofort ab. Deshalb erst die Freigabe abwarten.
   PadState pad;
   padInitializeDefault(&pad);
+  padUpdate(&pad);
+
+  bool plus_released = false;
   while (appletMainLoop()) {
     padUpdate(&pad);
-    if (padGetButtonsDown(&pad) & HidNpadButton_Plus) {
+    if (!(padGetButtons(&pad) & HidNpadButton_Plus)) {
+      plus_released = true;
+    }
+    if (plus_released && (padGetButtonsDown(&pad) & HidNpadButton_Plus)) {
       break;
     }
     consoleUpdate(nullptr);

@@ -48,6 +48,24 @@ Embedder aufsetzt, kein Papier mehr.
 häufig „Error getting name length: err=11 / No more processes"; beim zweiten Versuch
 klappt es. `err=11` ist `EAGAIN`, die Meldung stammt aus hbmenu selbst.
 
+---
+
+## 2026-08-09 – Falle: frischer `PadState` meldet gehaltene Tasten als Neudruck
+
+**Befund:** Ein neu per `padInitializeDefault` angelegter `PadState` startet mit leerem
+Vorzustand (`buttons_old == 0`). Ist eine Taste beim ersten `padUpdate` noch physisch
+gedrückt, meldet `padGetButtonsDown` sie als *neuen* Druck.
+
+**Symptom:** Der Diagnoseschirm von `hello_libnx` verschwand sofort wieder – er wird nach
+einem Plus-Druck geöffnet, und genau dieses noch gehaltene Plus beendete ihn im selben
+Moment. Auf dem Fernseher: kurz schwarz, dann hbmenu.
+
+**Konsequenz:** Nach dem Anlegen eines `PadState` einmal `padUpdate` zum Einlesen des
+Startzustands aufrufen und, wenn ein Tastendruck den Kontextwechsel ausgelöst hat, erst
+die Freigabe abwarten. Für den späteren Flutter-Eingabepfad ist dieselbe Falle relevant:
+Pointer- und Key-Events dürfen nicht aus einem uninitialisierten Vorzustand abgeleitet
+werden, sonst erzeugt jeder Fokuswechsel Phantom-Events.
+
 **Noch offen:** Logausgabe wurde noch nicht gesehen, sauberes Beenden über Plus noch nicht
 bestätigt, und der Framebuffer-Stride ist noch nicht gegen `width * 4` geprüft. Genau
 dieser Wert entscheidet später, ob Flutters Zeilenabstand direkt durchgereicht werden kann.
