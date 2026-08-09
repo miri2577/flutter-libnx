@@ -13,7 +13,22 @@ Version geprüft. Wo etwas nicht geprüft wurde, steht das ausdrücklich dabei.
 | Engine-Artefakt-Hash (Prebuilts) | `5cdd32777948fa7a648fac915f8da7120ac7e97a`, Revision `425cfb54d0` | `flutter --version` |
 | libnx (Referenz) | `dbcc1beafc6b47b5ffbeb8ba82463a7d45da40bb` (master) | `third_party/libnx` |
 | devkitA64 / devkitPro | **noch nicht installiert** | – |
-| Build-Host | WSL2 Ubuntu 24.04.4, x86_64, 4 Cores, 7 GB RAM, 943 GB frei | `uname`, `df`, `free` |
+| Build-Host | WSL2 Ubuntu 24.04.4, x86_64, 4 Cores, 11 GB RAM (via `.wslconfig`, 16 GB Host) | `uname`, `free` |
+
+### Ablageorte
+
+| Was | Wo | Anmerkung |
+|---|---|---|
+| dieses Repo | `E:\flutter-libnx` = `/mnt/e/flutter-libnx` | E: ist **exFAT**: keine Symlinks, keine POSIX-Rechte. Für Doku und Embedder-Quellen unkritisch; git braucht dort `safe.directory`. |
+| Flutter-SDK (Monorepo, Referenz) | `C:\Users\mirkorichter\flutter` | nur lesend |
+| Dart-SDK-Checkout (Referenz) | `~/dart-sdk-ref` in WSL, 483 MB | @ `02abc578` |
+| Engine-Checkout (gclient) | **noch offen** | siehe unten |
+
+**Offene Infrastrukturentscheidung:** Der `gclient`-Engine-Checkout braucht ~40–80 GB
+*und* Symlinks/POSIX-Rechte. Er passt weder ins WSL-Standarddateisystem (dessen
+`ext4.vhdx` liegt auf C:, dort sind nur noch ~9 GB frei) noch direkt auf exFAT.
+Sauberste Lösung: eine eigene ext4-VHDX auf E: anlegen und in WSL mounten – Daten liegen
+dann auf E:, haben aber volle Linux-Semantik und native Geschwindigkeit.
 
 Der entscheidende Glücksfall: das installierte Flutter-SDK ist das Monorepo und enthält
 `engine/src/flutter` vollständig. Die Engine-C++-Quellen der gepinnten Version liegen also
