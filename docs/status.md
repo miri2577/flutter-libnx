@@ -57,8 +57,13 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 
 ## Meilenstein 2 – Engine Cross-Compile PoC
 
-- [ ] Engine-Checkout (`gclient sync`) auf dem Build-Host
-- [ ] `current_os = "horizon"` in GN definiert
+- [x] Engine-Checkout (`gclient sync`) auf dem Build-Host – 26 GB, `~/engine/flutter`
+- [x] devkitA64 ohne root in WSL verfügbar (aus dem Container-Image entpackt)
+- [x] `current_os = "horizon"` in `BUILDCONFIG.gn` definiert
+- [x] `build/toolchain/horizon` nach QNX-Vorbild (gcc_toolchain, `is_clang = false`)
+- [x] `flutter/shell/platform/BUILD.gn` kennt horizon
+- [ ] **`gn gen` läuft durch** – hängt aktuell an der Dart-VM
+      (`third_party/dart/runtime/BUILD.gn:155`, „Unknown target_os: horizon")
 - [ ] Dart-VM-Portierungsdateien angelegt
 - [ ] fml kompiliert
 - [ ] Dart VM kompiliert

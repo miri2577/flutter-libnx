@@ -50,6 +50,36 @@ klappt es. `err=11` ist `EAGAIN`, die Meldung stammt aus hbmenu selbst.
 
 ---
 
+## 2026-08-09 – Meilenstein 2: `gn gen` bis zur Dart-VM vorgearbeitet
+
+Jeder Fehler einzeln geklärt statt pauschal umgangen. Die Reihenfolge, in der GN sie
+liefert, ist zugleich die Landkarte des Ports:
+
+| # | Fehler | Ursache | Lösung |
+|---|---|---|---|
+| 1 | `Undefined identifier is_apple` (`BUILDCONFIG.gn:327`) | `current_os = "horizon"` traf keinen Zweig, also blieb jede `is_*`-Variable undefiniert | eigener Zweig plus `is_horizon = false` in den zehn vorhandenen |
+| 2 | `Toolchain not set because of unknown platform` (`:678`) | keine Toolchain für das neue OS | `build/toolchain/horizon` nach QNX-Vorbild, `gcc_toolchain` mit `is_clang = false` |
+| 3 | `vpython3` fehlt (exit 127) | GN ruft Hilfsskripte über depot_tools auf | depot_tools in den `PATH` des Build-Skripts |
+| 4–7 | `engine_version`/`content_hash`/`skia_version`/`dart_version` fehlen | vier `assert` in `shell/version/version.gni:19-22` | Werte aus den Pins gesetzt; sie landen nur in Artefaktnamen |
+| 8 | `Unknown/Unsupported platform` (`shell/platform/BUILD.gn:28`) | Gruppe `platform` kennt horizon nicht | `deps = []` wie bei QNX – der Embedder hängt separat unter `shell/platform/embedder` |
+| 9 | `Unknown target_os: horizon` (`third_party/dart/runtime/BUILD.gn:155`) | **die Dart-VM** | offen – das ist der eigentliche Port |
+
+**Bewertung:** Die Punkte 1 bis 8 waren Konfiguration, zusammen unter einer Stunde. Punkt 9
+ist der Aufwand, den `docs/feasibility.md` §4 vorhergesagt hat. Ab hier wird nicht mehr
+konfiguriert, sondern portiert.
+
+**Zwei Lehren aus eigenen Fehlern:** Das Einfügen von GN-Zweigen per Index-Schneiden hat
+zweimal die schließende Klammer verschluckt, weil der eingefügte Block die ersetzte
+Klammer selbst mitbringen muss. Seither nur noch wörtliche Textersetzung mit vollständigem
+Kontext. Und: `docker run ... > datei.tar` über PowerShell zerstört Binärdaten – der
+Container muss direkt in ein gemountetes Verzeichnis schreiben.
+
+**devkitA64 in WSL ohne root:** `docker run --rm -v "E:\:/out" devkitpro/devkita64 tar -cf
+/out/dkp.tar -C /opt devkitpro`, danach in WSL entpacken. 1,2 GB, GCC 15.2.0 läuft nativ.
+Damit ist die sudo-Blockade endgültig umgangen.
+
+---
+
 ## 2026-08-09 – Meilenstein 1b: Der AOT-Ladeweg trägt
 
 **Die zentrale Hypothese des Projekts ist bis zur Linkphase bestätigt.**

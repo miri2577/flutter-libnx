@@ -65,10 +65,13 @@ def patch_buildconfig(path: str) -> bool:
     return True
 
 
+# Achtung: Beide Einfügeblöcke ersetzen die schließende Klammer des Zweigs, an
+# den sie angehängt werden. Sie müssen deshalb selbst mit `}` enden. Genau das
+# wurde zweimal vergessen und hat jeweils einen Syntaxfehler erzeugt.
 TOOLCHAIN_SELECT = '''} else if (is_horizon) {
   host_toolchain = "//build/toolchain/linux:clang_$host_cpu"
   set_default_toolchain("//build/toolchain/horizon")
-'''
+}'''
 
 TOOLCHAIN_GNI = '''# Copyright 2026 The flutter-libnx Authors.
 
@@ -150,6 +153,37 @@ def write_toolchain_files(src: str) -> None:
         print(f"    geschrieben: build/toolchain/horizon/{name}")
 
 
+def replace_once(path: str, old: str, new: str, label: str) -> bool:
+    """Wörtliche Ersetzung. Sicherer als das Herumschneiden an Klammern."""
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    if new in text:
+        print(f"    schon gepatcht: {label}")
+        return False
+    if old not in text:
+        print(f"    ANKER NICHT GEFUNDEN in {label}", file=sys.stderr)
+        return False
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text.replace(old, new, 1))
+    print(f"    gepatcht: {label}")
+    return True
+
+
+def patch_shell_platform(src: str) -> None:
+    path = os.path.join(src, "flutter", "shell", "platform", "BUILD.gn")
+    # QNX baut hier gar nichts; der Embedder haengt separat unter
+    # //flutter/shell/platform/embedder. Fuer Horizon gilt dasselbe.
+    replace_once(
+        path,
+        "  } else if (is_qnx) {\n    deps = []\n  } else {",
+        "  } else if (is_qnx) {\n    deps = []\n"
+        "  } else if (is_horizon) {\n    deps = []\n  } else {",
+        "flutter/shell/platform/BUILD.gn",
+    )
+
+
 def main() -> int:
     buildconfig = os.path.join(SRC, "build", "config", "BUILDCONFIG.gn")
     if not os.path.exists(buildconfig):
@@ -162,6 +196,9 @@ def main() -> int:
 
     print("==> build/toolchain/horizon/")
     write_toolchain_files(SRC)
+
+    print("==> flutter/shell/platform/BUILD.gn")
+    patch_shell_platform(SRC)
     return 0
 
 
