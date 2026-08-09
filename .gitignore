@@ -3,6 +3,10 @@ third_party/libnx/
 third_party/reference/
 third_party/engine/
 
+# Generierte AOT-Zwischenstufen (2,5 MB Assembly + 4 MB Kernel),
+# reproduzierbar per scripts/build-aot-poc.ps1
+examples/aot_poc/generated/
+
 # Build-Artefakte
 build/
 *.nro

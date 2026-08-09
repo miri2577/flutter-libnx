@@ -39,6 +39,18 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [ ] Logging (nxlink/Datei) liefert Ausgabe – nxlink war nicht verbunden, die
       SD-Logdatei wurde noch nicht ausgelesen
 
+## Meilenstein 1b – AOT-Assembly-PoC
+
+- [x] `gen_snapshot` für AArch64 gefunden (Android-arm64-Artefakte des gepinnten SDK,
+      kein eigener Dart-Build nötig)
+- [x] Dart-Kernel erzeugt (`gen_kernel_aot` + `vm_platform_product.dill`)
+- [x] AOT-Snapshot als AArch64-Assembly erzeugt (2,47 MB, 121.924 Zeilen)
+- [x] mit devkitA64 assembliert – ohne Anpassung, ohne Warnung
+- [x] in eine `.nro` gelinkt (758 KB), alle vier Symbole in der ELF vorhanden
+- [x] **Instruktionen liegen als `T` in `.text`** – kein `dlopen`/`mmap`/`mprotect` nötig
+- [ ] auf Hardware gestartet, Symboladressen zur Laufzeit geprüft
+- [ ] Snapshot *ausgeführt* – braucht die Dart-VM, also Meilenstein 2
+
 ## Meilenstein 2 – Engine Cross-Compile PoC
 
 - [ ] Engine-Checkout (`gclient sync`) auf dem Build-Host

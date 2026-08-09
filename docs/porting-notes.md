@@ -50,6 +50,57 @@ klappt es. `err=11` ist `EAGAIN`, die Meldung stammt aus hbmenu selbst.
 
 ---
 
+## 2026-08-09 – Meilenstein 1b: Der AOT-Ladeweg trägt
+
+**Die zentrale Hypothese des Projekts ist bis zur Linkphase bestätigt.**
+
+Kette, alle Schritte tatsächlich ausgeführt:
+
+```text
+hello.dart
+  → gen_kernel (dartaotruntime + vm_platform_product.dill)  → hello.dill, 4,1 MB
+  → gen_snapshot --snapshot_kind=app-aot-assembly           → hello_aot.s, 2,47 MB
+                                                               121.924 Zeilen
+  → aarch64-none-elf-gcc -c (devkitA64 15.2.0)              → hello_aot.o
+  → Link mit devkitPro-Regeln                               → aot_poc.nro, 758 KB
+```
+
+**Befund 1 – `gen_snapshot` muss nicht selbst gebaut werden.** Die
+Android-arm64-Release-Artefakte des gepinnten Flutter-SDK enthalten einen
+`gen_snapshot`, der auf x64 läuft und AArch64 erzeugt. Für die *Assembly*-Ausgabe ist
+das Zielbetriebssystem unerheblich, nur die Zielarchitektur zählt. Das spart im
+PoC einen kompletten Dart-SDK-Build.
+
+**Befund 2 – devkitA64 übersetzt die Ausgabe unverändert.** Die Assembly verwendet
+ausschließlich Standard-GNU-Direktiven (`.quad`, `.byte`, `.balign`, `.globl`,
+`.type … %object`, `.size`, `.uleb128`, `.cfi_*`). Keine Anpassung, kein Patch, keine
+Warnung.
+
+**Befund 3 – die Instruktionen landen im ausführbaren Segment.** `nm` auf der fertigen
+ELF:
+
+```text
+00000000000003c0 T _kDartVmSnapshotInstructions
+0000000000016e00 T _kDartIsolateSnapshotInstructions
+0000000000078500 R _kDartVmSnapshotData
+000000000007cd00 R _kDartIsolateSnapshotData
+```
+
+`T` bedeutet `.text`. Damit liegt der AOT-Code in dem Bereich, den der Homebrew-Loader
+ohnehin ausführbar mappt – **kein `dlopen`, kein `mmap`, kein `mprotect`, kein `jit.h`**.
+Genau das war in `docs/feasibility.md` §1 als Hypothese formuliert.
+
+**Befund 4 – Namensfalle für den anderen Weg.** `gen_snapshot` erzeugt die Symbole mit
+führendem Unterstrich (`_kDartVmSnapshotData`), die Engine sucht per dlsym dagegen ohne
+(`dart_snapshot.cc:18-21`). Für unseren Weg irrelevant, weil wir Zeiger übergeben statt
+Namen – für den ELF-/`dlopen`-Weg wäre es eine stille Fehlerquelle gewesen.
+
+**Was das ausdrücklich nicht zeigt:** dass der Snapshot *läuft*. Dafür fehlt die Dart-VM
+für Horizon. Geprüft ist der Ladeweg, nicht die Ausführung. Der nächste Beweis dafür
+kommt erst mit Meilenstein 2.
+
+---
+
 ## 2026-08-09 – Falle: frischer `PadState` meldet gehaltene Tasten als Neudruck
 
 **Befund:** Ein neu per `padInitializeDefault` angelegter `PadState` startet mit leerem
