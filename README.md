@@ -6,6 +6,11 @@ Ziel: eine echte Flutter-App als native `.nro` unter Horizon OS ausführen – k
 kein SDL-Ersatz-UI, keine Screenshots. Die UI muss tatsächlich von der Flutter Engine
 gerendert werden.
 
+Der Embedder ist ausdrücklich allgemein gedacht: Es sollen bestehende Flutter-Apps laufen,
+nicht eine bestimmte. Als härtester Referenzfall dient Referenz-App – eine Streaming-App mit
+Video und WebView. Was davon realistisch erreichbar ist und was eigene Projekte wären,
+steht in `docs/target-apps.md`.
+
 Das Projekt ist Forschungsarbeit und **läuft noch nicht**.
 
 ## Was funktioniert?
