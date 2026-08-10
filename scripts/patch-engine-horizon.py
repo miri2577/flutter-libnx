@@ -217,6 +217,13 @@ def patch_compiler_config(src: str) -> None:
         '      # genau der fuer solche Plattformen vorgesehene Weg\n'
         '      # (source/common/umapfile.h:41-49).\n'
         '      "U_HAVE_MMAP=0",\n'
+        '\n'
+        '      # Skias Plattformerkennung (SkFeatures.h) faellt fuer unbekannte\n'
+        '      # Systeme auf SK_BUILD_FOR_MAC zurueck - und damit auf Grand\n'
+        '      # Central Dispatch, das es hier nicht gibt. SK_BUILD_FOR_UNIX ist\n'
+        '      # Skias Bezeichnung fuer "POSIX-artig" und trifft zu: newlib\n'
+        '      # liefert die benutzten Schnittstellen, etwa POSIX-Semaphoren.\n'
+        '      "SK_BUILD_FOR_UNIX",\n'
         '    ]\n'
         '\n'
         '    cflags += [\n'
@@ -335,6 +342,64 @@ def patch_werror(src: str) -> None:
     )
 
 
+# Der Engine-Code verlässt sich an vielen Stellen darauf, dass glibc <cstring>
+# und <climits> transitiv mitzieht. newlib tut das nicht. Statt eine Liste von
+# Hand zu pflegen – der erste Anlauf übersah sämtliche Header – wird der Baum
+# durchsucht und der fehlende Include ergänzt.
+#
+# Das ist mechanisch und nachweislich harmlos: Ein zusätzlicher Standard-Include
+# ändert kein Verhalten. GCC schlägt die Korrektur bei jedem dieser Fehler von
+# sich aus vor.
+INCLUDE_SCAN_ROOTS = (
+    "flutter/assets",
+    "flutter/common",
+    "flutter/display_list",
+    "flutter/flow",
+    "flutter/fml",
+    "flutter/impeller",
+    "flutter/lib",
+    "flutter/runtime",
+    "flutter/shell/common",
+    "flutter/shell/platform/embedder",
+    "flutter/txt",
+)
+
+INCLUDE_CHECKS = (
+    ("cstring", ("string.h", "cstring"),
+     re.compile(r"\b(memcpy|memset|memmove|memcmp|strlen|strcmp|strncmp|strdup)\s*\(")),
+    ("climits", ("limits.h", "climits"),
+     re.compile(r"\b(INT_MAX|INT_MIN|UINT_MAX|LONG_MAX|LONG_MIN|ULONG_MAX|CHAR_BIT)\b")),
+)
+
+
+def add_include(src: str, rel_path: str, header: str) -> bool:
+    """Fuegt einen Standard-Include nach dem ersten vorhandenen #include ein."""
+    path = os.path.join(src, rel_path)
+    if not os.path.exists(path):
+        return False
+
+    with open(path, encoding="utf-8") as handle:
+        lines = handle.readlines()
+
+    needle = f"#include <{header}>"
+    if any(line.startswith(needle) for line in lines):
+        return False
+
+    # Nach dem ersten #include einfuegen. In Headern steht davor der
+    # Include-Guard, weshalb die erste Zeile nicht taugt.
+    for index, line in enumerate(lines):
+        if line.startswith("#include"):
+            lines.insert(index + 1, f"{needle}\n")
+            break
+    else:
+        print(f"    KEIN #include GEFUNDEN in {rel_path}", file=sys.stderr)
+        return False
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.writelines(lines)
+    return True
+
+
 def patch_missing_includes(src: str) -> None:
     """Fehlende Standard-Includes, die unter glibc transitiv mitkamen.
 
@@ -342,15 +407,45 @@ def patch_missing_includes(src: str) -> None:
     Portabilitaetsluecken im Upstream-Code, keine Horizon-Eigenheiten - sie
     faenden sich auf jeder schlanken libc.
     """
-    path = os.path.join(src, "flutter", "fml", "message_loop_task_queues.cc")
     replace_once(
-        path,
+        os.path.join(src, "flutter", "fml", "message_loop_task_queues.cc"),
         '#include "flutter/fml/message_loop_task_queues.h"\n',
         '#include "flutter/fml/message_loop_task_queues.h"\n'
         "\n"
         "#include <climits>  // ULONG_MAX; unter glibc transitiv, unter newlib nicht\n",
         "flutter/fml/message_loop_task_queues.cc",
     )
+
+    replace_once(
+        os.path.join(src, "flutter", "display_list", "dl_storage.cc"),
+        '#include "flutter/display_list/dl_storage.h"\n',
+        '#include "flutter/display_list/dl_storage.h"\n'
+        "\n"
+        "#include <cstring>  // memset; unter glibc transitiv, unter newlib nicht\n",
+        "flutter/display_list/dl_storage.cc",
+    )
+
+    added = 0
+    for root in INCLUDE_SCAN_ROOTS:
+        base = os.path.join(src, root)
+        for dirpath, _dirnames, filenames in os.walk(base):
+            for filename in sorted(filenames):
+                if not filename.endswith((".cc", ".cpp", ".h")):
+                    continue
+                if "_unittest" in filename or filename.endswith("_test.cc"):
+                    continue
+                path = os.path.join(dirpath, filename)
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    text = handle.read()
+
+                for header, includes, pattern in INCLUDE_CHECKS:
+                    if not pattern.search(text):
+                        continue
+                    if any(f"#include <{inc}>" in text for inc in includes):
+                        continue
+                    if add_include(src, os.path.relpath(path, src), header):
+                        added += 1
+    print(f"    {added} fehlende Includes ergänzt")
 
 
 def patch_fml_backtrace(src: str) -> None:
@@ -809,6 +904,149 @@ def patch_dart_vm_libs(src: str) -> None:
     )
 
 
+def patch_native_assets(src: str) -> None:
+    path = os.path.join(src, "flutter", "assets", "native_assets.cc")
+    # Der Name bildet zusammen mit der Architektur den Schluessel im
+    # native_assets-Manifest ("horizon_arm64"). Native Assets sind auf Horizon
+    # ohnehin nicht ladbar - es gibt kein dlopen -, aber der Code muss
+    # uebersetzen.
+    replace_once(
+        path,
+        '#elif defined(FML_OS_WIN)\n'
+        '#define kTargetOperatingSystemName "windows"\n'
+        "#else\n"
+        "#error Target operating system detection failed.",
+        '#elif defined(FML_OS_WIN)\n'
+        '#define kTargetOperatingSystemName "windows"\n'
+        "#elif defined(FML_OS_HORIZON)\n"
+        '#define kTargetOperatingSystemName "horizon"\n'
+        "#else\n"
+        "#error Target operating system detection failed.",
+        "flutter/assets/native_assets.cc",
+    )
+
+
+def patch_skia_osfile(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "skia", "src", "ports",
+                        "SkOSFile_posix.cpp")
+
+    replace_once(
+        path,
+        "#include <sys/mman.h>\n",
+        "#if !defined(__SWITCH__)\n"
+        "#include <sys/mman.h>\n"
+        "#endif\n",
+        "skia SkOSFile_posix.cpp (Include)",
+    )
+
+    # Nur diese drei Funktionen brauchen mmap. Auf Horizon wird die Datei
+    # stattdessen vollstaendig gelesen - dieselbe Entscheidung wie in
+    # fml/platform/horizon/mapping_horizon.cc, mit denselben Folgen: mehr
+    # Speicher, kein bedarfsweises Einlagern.
+    replace_once(
+        path,
+        "void sk_fmunmap(const void* addr, size_t length) {\n"
+        "    munmap(const_cast<void*>(addr), length);\n"
+        "}\n",
+        "#if defined(__SWITCH__)\n"
+        "\n"
+        "// Horizon kennt kein mmap. Die Datei wird gelesen statt abgebildet.\n"
+        "void sk_fmunmap(const void* addr, size_t length) {\n"
+        "    free(const_cast<void*>(addr));\n"
+        "}\n"
+        "\n"
+        "void* sk_fdmmap(int fd, size_t* size) {\n"
+        "    struct stat status = {};\n"
+        "    if (0 != fstat(fd, &status)) {\n"
+        "        return nullptr;\n"
+        "    }\n"
+        "    if (!S_ISREG(status.st_mode)) {\n"
+        "        return nullptr;\n"
+        "    }\n"
+        "    if (!SkTFitsIn<size_t>(status.st_size)) {\n"
+        "        return nullptr;\n"
+        "    }\n"
+        "    size_t fileSize = static_cast<size_t>(status.st_size);\n"
+        "\n"
+        "    void* addr = malloc(fileSize);\n"
+        "    if (nullptr == addr) {\n"
+        "        return nullptr;\n"
+        "    }\n"
+        "    if (lseek(fd, 0, SEEK_SET) < 0) {\n"
+        "        free(addr);\n"
+        "        return nullptr;\n"
+        "    }\n"
+        "    size_t total = 0;\n"
+        "    while (total < fileSize) {\n"
+        "        ssize_t bytes = read(fd, static_cast<char*>(addr) + total,\n"
+        "                             fileSize - total);\n"
+        "        if (bytes <= 0) {\n"
+        "            free(addr);\n"
+        "            return nullptr;\n"
+        "        }\n"
+        "        total += static_cast<size_t>(bytes);\n"
+        "    }\n"
+        "\n"
+        "    *size = fileSize;\n"
+        "    return addr;\n"
+        "}\n"
+        "\n"
+        "#else\n"
+        "\n"
+        "void sk_fmunmap(const void* addr, size_t length) {\n"
+        "    munmap(const_cast<void*>(addr), length);\n"
+        "}\n",
+        "skia SkOSFile_posix.cpp (sk_fmunmap)",
+    )
+
+    replace_once(
+        path,
+        "    *size = fileSize;\n"
+        "    return addr;\n"
+        "}\n"
+        "\n"
+        "int sk_fileno(FILE* f) {\n",
+        "    *size = fileSize;\n"
+        "    return addr;\n"
+        "}\n"
+        "\n"
+        "#endif  // defined(__SWITCH__)\n"
+        "\n"
+        "int sk_fileno(FILE* f) {\n",
+        "skia SkOSFile_posix.cpp (Ende des Zweigs)",
+    )
+
+
+def patch_skia_config(src: str) -> None:
+    path = os.path.join(src, "flutter", "skia", "BUILD.gn")
+    # Nach dem Vorbild des Fuchsia-Blocks daneben. Wir bauen ausschliesslich
+    # den Software-Renderer, also weder GL noch Vulkan - der erste Skia-Fehler
+    # kam prompt aus dem Ganesh-GL-Backend (GrAutoLocaleSetter.h braucht
+    # xlocale.h).
+    #
+    # Fonts kommen mit der App gebuendelt, nicht vom System: Auf Horizon gibt
+    # es weder fontconfig noch nutzbare Systemschriften.
+    replace_once(
+        path,
+        "# Skia public API, generally provided by :skia.\n",
+        "if (is_horizon) {\n"
+        "  # Nintendo Switch: nur Software-Rendering.\n"
+        "  skia_use_gl = false\n"
+        "  skia_use_vulkan = false\n"
+        "  skia_use_dng_sdk = false\n"
+        "\n"
+        "  # Schriften liefert die App mit; fontconfig gibt es nicht.\n"
+        "  skia_enable_fontmgr_custom_empty = true\n"
+        "  skia_enable_fontmgr_custom_directory = false\n"
+        "  skia_enable_fontmgr_custom_embedded = false\n"
+        "  skia_enable_fontmgr_fontconfig = false\n"
+        "}\n"
+        "\n"
+        "# Skia public API, generally provided by :skia.\n",
+        "flutter/skia/BUILD.gn (Horizon-Konfiguration)",
+    )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -870,11 +1108,18 @@ def main() -> int:
     patch_dart_vm_sources(SRC, repo_root)
     patch_dart_vm_libs(SRC)
 
+    print("==> flutter/skia/BUILD.gn")
+    patch_skia_config(SRC)
+    patch_skia_osfile(SRC)
+
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)
 
     print("==> flutter/fml/build_config.h")
     patch_fml_build_config(SRC)
+
+    print("==> flutter/assets/native_assets.cc")
+    patch_native_assets(SRC)
 
     print("==> fehlende Includes")
     patch_missing_includes(SRC)
