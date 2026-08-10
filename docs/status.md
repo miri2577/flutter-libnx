@@ -96,8 +96,13 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       Alle Kernsymbole der Embedder-API vorhanden (`FlutterEngineRun`,
       `FlutterEngineInitialize`, `SendWindowMetricsEvent`, `SendPointerEvent`,
       `SendPlatformMessage`).
-- [ ] **statisch linkbare Bibliothek** – `flutter_engine_library` ist eine
-      `shared_library`, die es auf Horizon nicht gibt (siehe unten)
+- [x] **statisch linkbare Bibliothek** – eigenes Ziel `flutter_engine_static`
+      (`complete_static_lib`), 1,6 GB, 2909 Objektdateien
+- [x] **Engine linkt in eine `.nro`** – `examples/engine_link_test`, 3,0 MB,
+      gültiges `NRO0`-Magic, AArch64. Aufrufe in die Engine
+      (`FlutterEngineGetCurrentTime`, `FlutterEngineRunsAOTCompiledDartCode`)
+      sind im Programm enthalten.
+- [ ] auf Hardware gestartet
 - [ ] Skia (Software) kompiliert
 - [ ] Engine linkt
 

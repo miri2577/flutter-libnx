@@ -97,6 +97,13 @@ bool VirtualMemory::FreeSubSegment(void* address, intptr_t size) {
   return false;
 }
 
+void VirtualMemory::DontNeed(void* address, intptr_t size) {
+  // Unter POSIX gibt madvise(MADV_DONTNEED) Seiten an das System zurueck, die
+  // spaeter neu eingelagert werden koennen. Ein Heap-Puffer kann das nicht -
+  // ein Verwerfen wuerde die Daten verlieren. Deshalb eine Leeroperation,
+  // passend zu IsDontNeedSafe() == false in fml/mapping_horizon.cc.
+}
+
 void VirtualMemory::Protect(void* address, intptr_t size, Protection mode) {
   // Ohne mprotect-Entsprechung wirkungslos. Der Aufrufer verlässt sich im
   // AOT-Product-Modus nicht darauf: Schreibschutz für Code-Seiten betrifft nur

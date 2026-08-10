@@ -133,12 +133,89 @@ bool OS::ParseInitialInt64(const char* str, int64_t* value, char** end) {
   return (errno == 0) && (*end != str);
 }
 
+int64_t OS::GetCurrentMonotonicTicks() {
+  struct timespec ts = {};
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0;
+  }
+  // Ticks in Nanosekunden; die Frequenz unten passt dazu.
+  return (static_cast<int64_t>(ts.tv_sec) * 1000000000) + ts.tv_nsec;
+}
+
+int64_t OS::GetCurrentMonotonicFrequency() {
+  return 1000000000;  // Nanosekunden
+}
+
+const char* OS::GetTimeZoneName(int64_t seconds_since_epoch) {
+  // Horizon führt eine Zeitzone, aber der Zugriff liefe über libnx und damit
+  // über <switch.h>, das hier bewusst draußen bleibt. Leerer Name heißt
+  // "unbekannt"; Dart faellt dann auf UTC zurueck.
+  return "";
+}
+
+int OS::GetTimeZoneOffsetInSeconds(int64_t seconds_since_epoch) {
+  return 0;
+}
+
+intptr_t OS::ActivationFrameAlignment() {
+  // AArch64 verlangt einen 16 Byte ausgerichteten Stapelzeiger.
+  return 16;
+}
+
+int OS::NumberOfAvailableProcessors() {
+  // Vier Kerne, davon drei fuer Homebrew nutzbar - der vierte gehoert dem
+  // System. Dieselbe Zahl wie in bin/platform_linux.cc.
+  return 3;
+}
+
+uintptr_t OS::CurrentRSS() {
+  // Kein /proc/self/statm. 0 heisst "unbekannt"; die VM benutzt den Wert nur
+  // fuer Berichte.
+  return 0;
+}
+
+void OS::SleepMicros(int64_t micros) {
+  struct timespec req = {};
+  req.tv_sec = static_cast<time_t>(micros / 1000000);
+  req.tv_nsec = static_cast<long>((micros % 1000000) * 1000);
+  nanosleep(&req, nullptr);
+}
+
+void OS::DebugBreak() {
+  __builtin_trap();
+}
+
+void OS::NotifyBeforeGC() {}
+
+void OS::NotifyAfterGC() {}
+
+uintptr_t OS::GetProgramCounter() {
+  return reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+}
+
+void OS::VFPrint(FILE* stream, const char* format, va_list args) {
+  vfprintf(stream, format, args);
+  fflush(stream);
+}
+
+void OS::RegisterCodeObservers() {
+  // Code-Observer melden erzeugten Maschinencode an Profiler wie perf. Im
+  // AOT-Product-Modus entsteht kein Code zur Laufzeit, und Profiler dieser
+  // Art gibt es auf Horizon ohnehin nicht.
+}
+
+void OS::PrepareToAbort() {}
+
 void OS::Init() {}
 
 void OS::Cleanup() {}
 
 void OS::Abort() {
   abort();
+}
+
+void OS::Exit(int code) {
+  exit(code);
 }
 
 OS::BuildId OS::GetAppBuildId(const uint8_t* snapshot_instructions) {

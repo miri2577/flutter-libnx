@@ -1020,7 +1020,8 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
     files = os.path.join(repo, "patches", "flutter-engine", "files", "dart", "bin")
 
     for name in ("eventhandler_horizon.h", "eventhandler_horizon.cc",
-                 "socket_base_horizon.h", "stdio_horizon.cc"):
+                 "socket_base_horizon.h", "stdio_horizon.cc",
+                 "posix_at_horizon.cc"):
         shutil.copyfile(os.path.join(files, name), os.path.join(base, name))
         print(f"    kopiert: dart/runtime/bin/{name}")
 
@@ -1035,7 +1036,7 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
     replace_once(
         os.path.join(base, "io_impl_sources.gni"),
         '  "stdio_linux.cc",\n',
-        '  "stdio_horizon.cc",\n  "stdio_linux.cc",\n',
+        '  "stdio_horizon.cc",\n  "posix_at_horizon.cc",\n  "stdio_linux.cc",\n',
         "dart bin/io_impl_sources.gni (stdio)",
     )
 
@@ -1729,6 +1730,136 @@ def patch_remaining_libdl(src: str) -> None:
     )
 
 
+def patch_embedder_static_library(src: str) -> None:
+    """Ein statisch linkbares Ziel fuer Horizon.
+
+    flutter_engine_library ist eine shared_library. Horizon-Homebrew kennt
+    keine dynamischen Bibliotheken, und devkitA64s libsysbase ist nicht mit
+    -fPIC uebersetzt - der Linker bricht folgerichtig ab.
+
+    complete_static_lib = true buendelt saemtliche Abhaengigkeiten in ein
+    Archiv, sodass sich die Engine mit einem einzigen -l in die NRO linken
+    laesst.
+    """
+    path = os.path.join(src, "flutter", "shell", "platform", "embedder",
+                        "BUILD.gn")
+    replace_once(
+        path,
+        'shared_library("flutter_engine_library") {\n',
+        "# Horizon: statt einer Shared Library ein vollstaendiges Archiv, das\n"
+        "# in die NRO gelinkt wird.\n"
+        "static_library(\"flutter_engine_static\") {\n"
+        "  complete_static_lib = true\n"
+        "  output_name = \"flutter_engine\"\n"
+        "  deps = [ \":embedder_as_internal_library\" ]\n"
+        "  public_configs = [ \"//flutter:config\" ]\n"
+        "}\n"
+        "\n"
+        'shared_library("flutter_engine_library") {\n',
+        "flutter/shell/platform/embedder/BUILD.gn (statisches Ziel)",
+    )
+
+
+def patch_dart_synchronization_posix(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "platform", "synchronization_posix.cc")
+    # In synchronization.h wurden nur die Typen ergaenzt (pthread_mutex_t und
+    # pthread_cond_t). Die Implementierung von Mutex und ConditionVariable
+    # liegt hier - und ihr Waechter kannte Horizon nicht, weshalb der Linker
+    # die Symbole vermisste.
+    #
+    # Genau diese Sorte Luecke sieht der Compiler nicht: Jede Uebersetzungs-
+    # einheit fuer sich war stimmig.
+    replace_once(
+        path,
+        "    (defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_FUCHSIA) ||           \\\n"
+        "     defined(DART_HOST_OS_MACOS) || defined(DART_HOST_OS_ANDROID))",
+        "    (defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_FUCHSIA) ||           \\\n"
+        "     defined(DART_HOST_OS_MACOS) || defined(DART_HOST_OS_ANDROID) ||           \\\n"
+        "     defined(DART_HOST_OS_HORIZON))",
+        "dart platform/synchronization_posix.cc",
+    )
+
+
+def patch_dart_platform_linux_files(src: str) -> None:
+    """utils_linux.cc und syslog_linux.cc gelten unveraendert auch fuer Horizon.
+
+    Beide enthalten reinen POSIX-Code: vsnprintf-Huellen bzw. Ausgabe auf
+    stderr. Der Linker vermisste ihre Symbole nur, weil ihr Waechter Horizon
+    nicht kannte.
+    """
+    base = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "platform")
+    for name in ("utils_linux.cc", "syslog_linux.cc"):
+        replace_once(
+            os.path.join(base, name),
+            "#if defined(DART_HOST_OS_LINUX)\n",
+            "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_HORIZON)\n",
+            f"dart platform/{name}",
+        )
+
+    # utils_linux.cc bindet sys/utsname.h ein - fuer uname, das Horizon nicht
+    # hat. Der Rest der Datei sind vsnprintf-Huellen und Zeichenkettenhilfen.
+    replace_once(
+        os.path.join(base, "utils_linux.cc"),
+        "#include <sys/utsname.h>",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/utsname.h>\n"
+        "#endif",
+        "dart platform/utils_linux.cc (sys/utsname.h)",
+    )
+
+    # Die Datei bindet ihren Plattformheader am Ende direkt ein - wie zuvor
+    # schon socket_base_linux.cc. utils_linux.h braucht <endian.h>, das newlib
+    # nicht hat; utils_horizon.h loest dasselbe ueber __builtin_bswap.
+    replace_once(
+        os.path.join(base, "utils_linux.cc"),
+        '#include "platform/utils_linux.h"\n',
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        '#include "platform/utils_horizon.h"\n'
+        "#else\n"
+        '#include "platform/utils_linux.h"\n'
+        "#endif\n",
+        "dart platform/utils_linux.cc (Plattformheader)",
+    )
+
+    # IsWindowsSubsystemForLinux ist in utils.h nur unter DART_HOST_OS_LINUX
+    # deklariert - und auf einer Spielkonsole ohnehin gegenstandslos.
+    replace_once(
+        os.path.join(base, "utils_linux.cc"),
+        "bool Utils::IsWindowsSubsystemForLinux() {\n"
+        "  struct utsname info;\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "bool Utils::IsWindowsSubsystemForLinux() {\n"
+        "  struct utsname info;\n",
+        "dart platform/utils_linux.cc (IsWindowsSubsystemForLinux Anfang)",
+    )
+
+    replace_once(
+        os.path.join(base, "utils_linux.cc"),
+        '  return strstr(info.release, "icrosoft") != nullptr;\n'
+        "}\n",
+        '  return strstr(info.release, "icrosoft") != nullptr;\n'
+        "}\n"
+        "#endif  // !defined(DART_HOST_OS_HORIZON)\n",
+        "dart platform/utils_linux.cc (IsWindowsSubsystemForLinux Ende)",
+    )
+
+
+def patch_skia_debug(src: str) -> None:
+    path = os.path.join(src, "flutter", "skia", "BUILD.gn")
+    # SkDebugf wird pro Plattform bereitgestellt. Die stdio-Fassung passt und
+    # wird von Linux, WASM und QNX gleichermassen benutzt.
+    replace_once(
+        path,
+        "  if (is_linux || is_wasm || is_qnx) {\n"
+        '    sources += [ "$_skia_root/src/ports/SkDebug_stdio.cpp" ]\n',
+        "  if (is_linux || is_wasm || is_qnx || is_horizon) {\n"
+        '    sources += [ "$_skia_root/src/ports/SkDebug_stdio.cpp" ]\n',
+        "flutter/skia/BUILD.gn (SkDebug_stdio)",
+    )
+
+
 def patch_skia_osfile(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "skia", "src", "ports",
                         "SkOSFile_posix.cpp")
@@ -1927,10 +2058,14 @@ def main() -> int:
     patch_implicit_float_conversion(SRC)
     patch_embedder_surface(SRC)
     patch_remaining_libdl(SRC)
+    patch_embedder_static_library(SRC)
+    patch_dart_synchronization_posix(SRC)
+    patch_dart_platform_linux_files(SRC)
 
     print("==> flutter/skia/BUILD.gn")
     patch_skia_config(SRC)
     patch_skia_osfile(SRC)
+    patch_skia_debug(SRC)
 
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)
