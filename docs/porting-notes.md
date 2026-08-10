@@ -6,6 +6,82 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-10 – Von 100 auf 30 offene Symbole: dart:io steht
+
+**Befund:** Die Gruppen aus der Landkarte ließen sich fast alle so abarbeiten, wie sie
+sortiert waren. Was dabei über den Zuschnitt der Arbeit klar wurde:
+
+*Guards statt Neuschreiben.* `socket_base_posix.cc` (483 Zeilen, 29 Symbole),
+`console_posix.cc`, `namespace_linux.cc` und `security_context_linux.cc` brauchten nur
+`DART_HOST_OS_HORIZON` im `#if`. Drei Nebenwirkungen mussten mit:
+
+- `console_posix.cc` bindet `<termios.h>` ein, das bei newlib auf ein nicht vorhandenes
+  `<sys/termios.h>` verweist. Beide Funktionen der Datei sind leer – der Include stammt
+  aus einer Zeit, als sie noch etwas taten.
+- `socket_base_posix.cc` holt `RawAddr` über `socket_base_macos.h`, das `<sys/un.h>`
+  braucht. Für Horizon zeigt der Include jetzt auf `socket_base_horizon.h`.
+- `bin/ifaddrs.h` suchte den Systemheader. Upstream hat dafür längst einen Zweig – er
+  entstand für Android vor API 24 und erklärt `struct ifaddrs` selbst. Wieder ein Fall,
+  in dem die Vorkehrung schon da war.
+
+*Kurze ehrliche Fassungen statt Portierung.* `process_horizon.cc` ersetzt 1203 Zeilen
+durch 140. Auf Horizon gibt es keine Kindprozesse, also ist die richtige Antwort auf
+`Process::Start` ein sichtbarer Fehlschlag mit `ENOSYS` – nicht der Versuch, etwas
+nachzubauen. Was auch ohne Prozesse gebraucht wird (globaler Exitcode, Exit-Hook),
+funktioniert vollständig. `file_system_watcher_horizon.cc` meldet `IsSupported() = false`;
+dart:io hat diese Frage genau für solche Plattformen vorgesehen, die Dart-Seite wirft
+dann eine aussagekräftige Ausnahme, statt auf Ereignisse zu warten, die nie kommen.
+
+*Zufall.* `crypto_linux.cc` liest `/dev/urandom`, ersatzweise `SYS_getrandom` – beides
+gibt es nicht. newlib bringt aber `getentropy()` mit und reicht an `_getentropy_r`
+weiter, das die Plattform zu stellen hat. `embedder/src/platform/random_horizon.cpp`
+liefert es über `csrngGetRandomBytes`, den kryptographisch geeigneten Generator des
+Systems. Das bedient zugleich BoringSSL, das dieselbe Funktion zieht. Die Datei steht
+allein, damit `<switch.h>` und seine Makros nicht in fremden Übersetzungseinheiten
+landen – dieselbe Vorsicht wie bei `os_horizon.cc`.
+
+*POSIX-Lücken.* In die Compat-Schicht kamen `fstatat`, `fchdir`, `open64`, `openat64`,
+`pread`, `pipe`, `pthread_sigmask`, `readlinkat`, `symlinkat`, `utimensat`. Drei
+Entscheidungen darin sind erwähnenswert:
+
+- `pread` gibt es nicht, also bleibt suchen-lesen-zurücksetzen. Das ist nicht atomar,
+  deshalb eine Sperre; ohne sie würden zwei Threads am selben Deskriptor einander die
+  Position verstellen.
+- `pipe` läuft über `socketpair`, wie schon der Eventhandler.
+- `pthread_sigmask` tut nichts und meldet Erfolg. Das ist kein verschwiegener Fehler:
+  Horizon stellt keine Signale zu, „alles blockiert" und „nichts blockiert" sind
+  dasselbe.
+- `readlinkat` gibt `EINVAL` – genau das, was POSIX für „ist kein Verweis" vorsieht. Das
+  Dateisystem der Switch kennt keine symbolischen Verweise.
+
+**Ergebnis:** 100 → 30 offene Symbole. Übrig bleiben drei Gruppen, alle mit
+Build-Ursachen statt Portierungsursachen.
+
+---
+
+## 2026-08-10 – Drei Build-Ursachen: FreeType, Zertifikate, abseil
+
+**Befund 1 – FreeType.** Die Bibliothek selbst wurde gebaut (24 Objektdateien), Skias
+Anbindung daran aber nicht: null Objekte für `skia_ports_freetype_sources`. Grund ist der
+`is_horizon`-Block in `flutter/skia/BUILD.gn`, der `skia_use_freetype` nicht setzt – der
+Vorgabewert hängt an Plattformen, die Horizon nicht kennt. Der Fuchsia-Block direkt
+darüber setzt es aus demselben Grund ausdrücklich. Ohne Typeface gäbe es keinen Text.
+
+**Befund 2 – Wurzelzertifikate.** `root_certificates_pem_length` fehlte. Der Baum kennt
+`root_certificates_unsupported.cc` und ein Ziel `fallback_root_certificates`, gesteuert
+über `dart_use_fallback_root_certificates`. Auf Horizon ist das keine Notlösung, sondern
+der einzige Weg: Es gibt keinen Systemzertifikatspeicher und kein `/etc/ssl`. Ohne das
+Flag wäre jede HTTPS-Verbindung unmöglich – und damit Referenz-App.
+
+**Befund 3 – abseil.** `low_level_alloc.o` wird gebaut, enthält aber **null Symbole**.
+`low_level_alloc.h:39-41` setzt `ABSL_LOW_LEVEL_ALLOC_MISSING`, sobald `ABSL_HAVE_MMAP`
+fehlt – für Horizon zutreffend. Trotzdem verlangen `borrowed_fixup_buffer.cc`
+(Stacktrace) und `create_thread_identity.cc` die Funktionen; dazu fehlen
+`AbslInternalPerThreadSem{Post,Wait}`. Noch offen, welcher Teil der Engine abseils Mutex
+überhaupt erreicht.
+
+---
+
 ## 2026-08-10 – Die Engine initialisiert auf echter Switch-Hardware
 
 **Befund:** `engine_link_test.nro` (7,4 MB) per Netloader auf die Switch übertragen und

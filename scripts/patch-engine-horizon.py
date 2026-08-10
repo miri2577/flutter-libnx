@@ -541,52 +541,71 @@ def patch_fml_platform_sources(src: str, repo: str) -> None:
                         os.path.join(target_dir, name))
         print(f"    kopiert: fml/platform/horizon/{name}")
 
-    replace_once(
-        os.path.join(src, "flutter", "fml", "BUILD.gn"),
-        '      "platform/posix/process_posix.cc",\n'
-        "    ]\n"
-        "  }",
-        '      "platform/posix/process_posix.cc",\n'
-        "    ]\n"
-        "\n"
-        "    if (is_horizon) {\n"
-        "      # Horizon hat weder mmap noch dlopen.\n"
-        "      sources -= [\n"
-        '        "platform/posix/mapping_posix.cc",\n'
-        '        "platform/posix/native_library_posix.cc",\n'
-        "      ]\n"
-        "      sources += [\n"
-        '        "platform/horizon/mapping_horizon.cc",\n'
-        '        "platform/horizon/native_library_horizon.cc",\n'
-        "      ]\n"
-        "    }\n"
-        "  }",
-        "flutter/fml/BUILD.gn",
-    )
+    # Der Ersatztext dieses Patches waechst mit jeder weiteren Horizon-Quelle,
+    # deshalb erkennt ihn die generische Pruefung nach der ersten Erweiterung
+    # nicht mehr wieder. Der is_horizon-Block als solcher ist das verlaessliche
+    # Merkmal.
+    with open(os.path.join(src, "flutter", "fml", "BUILD.gn"),
+              encoding="utf-8") as handle:
+        _fml_text = handle.read()
+    if "platform/horizon/mapping_horizon.cc" in _fml_text:
+        print("    schon gepatcht: flutter/fml/BUILD.gn (is_horizon-Block)")
+        _skip_fml_block = True
+    else:
+        _skip_fml_block = False
+
+    if not _skip_fml_block:
+        replace_once(
+            os.path.join(src, "flutter", "fml", "BUILD.gn"),
+            '      "platform/posix/process_posix.cc",\n'
+            "    ]\n"
+            "  }",
+            '      "platform/posix/process_posix.cc",\n'
+            "    ]\n"
+            "\n"
+            "    if (is_horizon) {\n"
+            "      # Horizon hat weder mmap noch dlopen.\n"
+            "      sources -= [\n"
+            '        "platform/posix/mapping_posix.cc",\n'
+            '        "platform/posix/native_library_posix.cc",\n'
+            "      ]\n"
+            "      sources += [\n"
+            '        "platform/horizon/mapping_horizon.cc",\n'
+            '        "platform/horizon/native_library_horizon.cc",\n'
+            "      ]\n"
+            "    }\n"
+            "  }",
+            "flutter/fml/BUILD.gn",
+        )
 
     # Eigener Schritt statt Teil des Blocks darueber: Der grosse Patch war zum
     # Zeitpunkt dieser Aenderung in vorhandenen Baeumen schon angewendet. So
     # greift es sowohl im frischen als auch im bereits gepatchten Baum.
-    replace_once(
-        os.path.join(src, "flutter", "fml", "BUILD.gn"),
-        '        "platform/horizon/native_library_horizon.cc",\n'
-        "      ]\n",
-        '        "platform/horizon/native_library_horizon.cc",\n'
-        '        "platform/horizon/paths_horizon.cc",\n'
-        "      ]\n",
-        "flutter/fml/BUILD.gn (paths)",
-    )
-
-    replace_once(
-        os.path.join(src, "flutter", "fml", "BUILD.gn"),
-        '        "platform/horizon/paths_horizon.cc",\n'
-        "      ]\n",
-        '        "platform/horizon/paths_horizon.cc",\n'
-        '        "platform/horizon/message_loop_horizon.cc",\n'
-        '        "platform/horizon/message_loop_horizon.h",\n'
-        "      ]\n",
-        "flutter/fml/BUILD.gn (message loop)",
-    )
+    # Auf den Eintrag selbst pruefen statt auf den Ersatztext: Sobald ein
+    # weiterer Patch den Text hinter dem Anker veraendert, findet die
+    # generische Pruefung weder alt noch neu und meldet faelschlich einen
+    # fehlenden Anker.
+    fml_build = os.path.join(src, "flutter", "fml", "BUILD.gn")
+    for entry, anchor in (
+        ("platform/horizon/paths_horizon.cc",
+         '        "platform/horizon/native_library_horizon.cc",\n'),
+        ("platform/horizon/message_loop_horizon.cc",
+         '        "platform/horizon/paths_horizon.cc",\n'),
+    ):
+        with open(fml_build, encoding="utf-8") as handle:
+            text = handle.read()
+        if f'"{entry}"' in text:
+            print(f"    schon gepatcht: flutter/fml/BUILD.gn ({entry})")
+            continue
+        extra = ""
+        if entry.endswith("message_loop_horizon.cc"):
+            extra = '        "platform/horizon/message_loop_horizon.h",\n'
+        replace_once(
+            fml_build,
+            anchor,
+            anchor + f'        "{entry}",\n' + extra,
+            f"flutter/fml/BUILD.gn ({entry})",
+        )
 
     # Ohne diesen Zweig faellt Create() in das #else und liefert nullptr. Das
     # linkt anstandslos und stuerzt erst zur Laufzeit ab, sobald der erste
@@ -624,13 +643,23 @@ def patch_fml_platform_sources(src: str, repo: str) -> None:
     # file_posix.cc bindet sys/mman.h ein, benutzt daraus aber nichts. Der
     # Include ist schlicht tot - Entfernen ist auch fuer andere Plattformen
     # korrekt.
-    replace_once(
-        os.path.join(src, "flutter", "fml", "platform", "posix",
-                     "file_posix.cc"),
-        "#include <sys/mman.h>\n",
-        "",
-        "flutter/fml/platform/posix/file_posix.cc (toter Include)",
-    )
+    #
+    # Ein leerer Ersatztext laesst sich nicht wiedererkennen, deshalb hier die
+    # Abwesenheit pruefen statt replace_once entscheiden zu lassen.
+    file_posix = os.path.join(src, "flutter", "fml", "platform", "posix",
+                              "file_posix.cc")
+    with open(file_posix, encoding="utf-8") as handle:
+        _fp_text = handle.read()
+    if "#include <sys/mman.h>" in _fp_text:
+        replace_once(
+            file_posix,
+            "#include <sys/mman.h>\n",
+            "",
+            "flutter/fml/platform/posix/file_posix.cc (toter Include)",
+        )
+    else:
+        print("    schon gepatcht: flutter/fml/platform/posix/file_posix.cc "
+              "(toter Include)")
 
 
 def patch_cxx_std(src: str) -> None:
@@ -1083,9 +1112,36 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
     # koennen sie echte Verzeichnis-Handles aufloesen, waehrend die Fassung
     # im Dart-Baum nur AT_FDCWD beherrschte - fuer fml zu wenig.
     for name in ("eventhandler_horizon.h", "eventhandler_horizon.cc",
-                 "socket_base_horizon.h", "stdio_horizon.cc"):
+                 "socket_base_horizon.h", "stdio_horizon.cc",
+                 "crypto_horizon.cc", "process_horizon.cc",
+                 "file_system_watcher_horizon.cc"):
         shutil.copyfile(os.path.join(files, name), os.path.join(base, name))
         print(f"    kopiert: dart/runtime/bin/{name}")
+
+    # Eintraege einzeln pruefen, nicht ueber den Ersatztext: Der Anker
+    # ueberlebt jede Ersetzung, und ein spaeter geaenderter Ersatztext wuerde
+    # denselben Eintrag ein zweites Mal einfuegen. Das hat GN schon einmal
+    # als doppelte Quelldatei abgelehnt.
+    # crypto steht nicht bei dart:io, sondern bei den Builtins - die
+    # Zufallsquelle wird auch ohne dart:io gebraucht.
+    for entry, anchor, gni_name in (
+        ("crypto_horizon.cc", "crypto_linux.cc", "builtin_impl_sources.gni"),
+        ("process_horizon.cc", "process_linux.cc", "io_impl_sources.gni"),
+        ("file_system_watcher_horizon.cc", "file_system_watcher_linux.cc",
+         "io_impl_sources.gni"),
+    ):
+        gni = os.path.join(base, gni_name)
+        with open(gni, encoding="utf-8") as handle:
+            text = handle.read()
+        if f'"{entry}",' in text:
+            print(f"    schon gepatcht: {gni_name} ({entry})")
+            continue
+        replace_once(
+            gni,
+            f'  "{anchor}",\n',
+            f'  "{entry}",\n  "{anchor}",\n',
+            f"dart bin/{gni_name} ({entry})",
+        )
 
     replace_once(
         os.path.join(base, "io_impl_sources.gni"),
@@ -1113,6 +1169,155 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
             "dart bin/io_impl_sources.gni (stdio)",
         )
 
+
+    # dart:io ist zweistufig: *_posix.cc traegt die gemeinsame
+    # Unix-Implementierung, *_linux.cc nur die Unterschiede zwischen den
+    # Unixen. Wer bloss die Linux-Ebene freischaltet, bekommt eine Handvoll
+    # Symbole und wundert sich ueber den Rest. socket_base_linux.cc definiert
+    # Multicast und Lookup, waehrend Read, Write und Close hier liegen.
+    replace_once(
+        os.path.join(base, "socket_base_posix.cc"),
+        "#if defined(DART_HOST_OS_ANDROID) || defined(DART_HOST_OS_LINUX) ||"
+        "            \\\n    defined(DART_HOST_OS_MACOS)\n",
+        "#if defined(DART_HOST_OS_ANDROID) || defined(DART_HOST_OS_LINUX) ||"
+        "            \\\n    defined(DART_HOST_OS_MACOS) || "
+        "defined(DART_HOST_OS_HORIZON)\n",
+        "dart bin/socket_base_posix.cc (Guard)",
+    )
+
+    # socket_base_posix.cc holt sich RawAddr ueber den macOS-Header, und der
+    # bindet sys/un.h ein - Unix-Domain-Sockets mit Pfadnamen, die libnx nicht
+    # kennt. socket_base_horizon.h erklaert dieselbe Struktur ohne diesen
+    # Umweg.
+    replace_once(
+        os.path.join(base, "socket_base_posix.cc"),
+        '#include "bin/socket_base_macos.h"\n',
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        '#include "bin/socket_base_horizon.h"\n'
+        "#else\n"
+        '#include "bin/socket_base_macos.h"\n'
+        "#endif\n",
+        "dart bin/socket_base_posix.cc (socket_base_macos.h)",
+    )
+
+    # Von der ganzen Datei braucht allein ListInterfaces etwas, das libnx
+    # nicht hat: getifaddrs. Das betrifft NetworkInterface.list() und sonst
+    # nichts - der Rest der Socket-API bleibt vollstaendig.
+    replace_once(
+        os.path.join(base, "socket_base_posix.cc"),
+        "AddressList<InterfaceSocketAddress>* SocketBase::ListInterfaces(\n"
+        "    int type,\n"
+        "    OSError** os_error) {\n"
+        "  struct ifaddrs* ifaddr;\n",
+        "AddressList<InterfaceSocketAddress>* SocketBase::ListInterfaces(\n"
+        "    int type,\n"
+        "    OSError** os_error) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // libnx bietet kein getifaddrs. Die Socket-API selbst ist davon\n"
+        "  // unberuehrt; nur das Aufzaehlen der Schnittstellen entfaellt.\n"
+        "  ASSERT(*os_error == nullptr);\n"
+        "  *os_error = new OSError(ENOSYS, \"getifaddrs is not available on \"\n"
+        "                          \"Horizon\", OSError::kSystem);\n"
+        "  return nullptr;\n"
+        "#else\n"
+        "  struct ifaddrs* ifaddr;\n",
+        "dart bin/socket_base_posix.cc (ListInterfaces)",
+    )
+
+    replace_once(
+        os.path.join(base, "socket_base_posix.cc"),
+        "  freeifaddrs(ifaddr);\n"
+        "  return addresses;\n"
+        "}\n",
+        "  freeifaddrs(ifaddr);\n"
+        "  return addresses;\n"
+        "#endif  // defined(DART_HOST_OS_HORIZON)\n"
+        "}\n",
+        "dart bin/socket_base_posix.cc (ListInterfaces Ende)",
+    )
+
+    # Fuer Plattformen ohne getifaddrs gibt es in bin/ifaddrs.h laengst einen
+    # Zweig - er entstand fuer Android vor API 24. Genau der passt hier: Er
+    # erklaert struct ifaddrs selbst, statt den Systemheader zu suchen, den
+    # devkitA64 nicht mitbringt. Aufgerufen wird davon nichts, weil
+    # ListInterfaces fuer Horizon abgeschaltet ist; gebraucht wird allein der
+    # Typ, damit die Datei uebersetzt.
+    replace_once(
+        os.path.join(base, "ifaddrs.h"),
+        "#if defined(ANDROID) && __ANDROID_API__ < 24\n",
+        "#if (defined(ANDROID) && __ANDROID_API__ < 24) || "
+        "defined(DART_HOST_OS_HORIZON)\n",
+        "dart bin/ifaddrs.h (Horizon)",
+    )
+
+    # platform/globals.h liefert DART_HOST_OS_HORIZON - ohne den Include
+    # waere die Weiche oben immer falsch.
+    replace_once(
+        os.path.join(base, "ifaddrs.h"),
+        "#ifndef RUNTIME_BIN_IFADDRS_H_\n"
+        "#define RUNTIME_BIN_IFADDRS_H_\n",
+        "#ifndef RUNTIME_BIN_IFADDRS_H_\n"
+        "#define RUNTIME_BIN_IFADDRS_H_\n"
+        "\n"
+        '#include "platform/globals.h"\n',
+        "dart bin/ifaddrs.h (globals)",
+    )
+
+    # console_posix.cc: beide Funktionen sind ohnehin leer.
+    replace_once(
+        os.path.join(base, "console_posix.cc"),
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||"
+        "              \\\n    defined(DART_HOST_OS_ANDROID) || "
+        "defined(DART_HOST_OS_FUCHSIA)\n",
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||"
+        "              \\\n    defined(DART_HOST_OS_ANDROID) || "
+        "defined(DART_HOST_OS_FUCHSIA) ||                \\\n"
+        "    defined(DART_HOST_OS_HORIZON)\n",
+        "dart bin/console_posix.cc (Guard)",
+    )
+
+    # termios.h von newlib bindet sys/termios.h ein, das devkitA64 nicht hat.
+    # Gebraucht wird es hier nicht: Beide Funktionen der Datei sind leer, der
+    # Include stammt aus der Zeit, als sie noch etwas taten.
+    replace_once(
+        os.path.join(base, "console_posix.cc"),
+        "#include <sys/ioctl.h>\n"
+        "#include <termios.h>\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/ioctl.h>\n"
+        "#include <termios.h>\n"
+        "#endif\n",
+        "dart bin/console_posix.cc (termios)",
+    )
+
+    # namespace_linux.cc arbeitet mit Verzeichnis-Deskriptoren (open64,
+    # fchdir, openat). Genau die stellt die Compat-Schicht des Embedders
+    # inzwischen bereit, deshalb reicht hier der Guard.
+    replace_once(
+        os.path.join(base, "namespace_linux.cc"),
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)\n"
+        "\n"
+        '#include "bin/namespace.h"\n',
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID) || \\\n"
+        "    defined(DART_HOST_OS_HORIZON)\n"
+        "\n"
+        '#include "bin/namespace.h"\n',
+        "dart bin/namespace_linux.cc (Guard)",
+    )
+
+    # security_context_linux.cc braucht nur BoringSSL und die eingebauten
+    # Wurzelzertifikate; beides ist plattformunabhaengig.
+    replace_once(
+        os.path.join(base, "security_context_linux.cc"),
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)\n"
+        "\n"
+        '#include "bin/security_context.h"\n',
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID) || \\\n"
+        "    defined(DART_HOST_OS_HORIZON)\n"
+        "\n"
+        '#include "bin/security_context.h"\n',
+        "dart bin/security_context_linux.cc (Guard)",
+    )
 
     # socket_base_linux.h bindet <sys/un.h> ein, das libnx nicht hat - deshalb
     # eine eigene, ansonsten gleiche Fassung.
@@ -2047,10 +2252,43 @@ def patch_skia_config(src: str) -> None:
         "  skia_enable_fontmgr_custom_directory = false\n"
         "  skia_enable_fontmgr_custom_embedded = false\n"
         "  skia_enable_fontmgr_fontconfig = false\n"
+        "\n"
+        "  # Ausdruecklich, wie im Fuchsia-Block darueber: Der Vorgabewert\n"
+        "  # haengt an Plattformen, die Horizon nicht kennt. Ohne dies baut\n"
+        "  # zwar die FreeType-Bibliothek selbst, nicht aber Skias Anbindung\n"
+        "  # daran - SkTypeface_FreeType fehlt dann beim Linken, und ohne\n"
+        "  # Typeface gibt es keinen Text.\n"
+        "  skia_use_freetype = true\n"
         "}\n"
         "\n"
         "# Skia public API, generally provided by :skia.\n",
         "flutter/skia/BUILD.gn (Horizon-Konfiguration)",
+    )
+
+    # SkFontHost_FreeType.cpp bindet dlfcn.h ein, um neuere FreeType-Funktionen
+    # zur Laufzeit nachzuladen, falls die Systembibliothek sie mitbringt. Auf
+    # Horizon gibt es weder dlopen noch eine Systembibliothek - FreeType wird
+    # fest mitgelinkt, die Laufzeitversion ist also die Bauversion.
+    #
+    # Skia sieht genau dafuer SK_FREETYPE_MINIMUM_RUNTIME_VERSION_IS_BUILD_VERSION
+    # vor (SkFontHost_FreeType.cpp:76-91). Damit entfaellt das DLOPEN-Flag und
+    # mit ihm der Include. Android-Framework und Google3 gehen denselben Weg.
+    replace_once(
+        path,
+        'optional("typeface_freetype") {\n'
+        "  enabled = skia_use_freetype\n"
+        "\n"
+        '  public_defines = [ "SK_TYPEFACE_FACTORY_FREETYPE" ]\n',
+        'optional("typeface_freetype") {\n'
+        "  enabled = skia_use_freetype\n"
+        "\n"
+        '  public_defines = [ "SK_TYPEFACE_FACTORY_FREETYPE" ]\n'
+        "  if (is_horizon) {\n"
+        "    # FreeType ist fest gelinkt; nichts wird nachgeladen.\n"
+        "    defines = "
+        '[ "SK_FREETYPE_MINIMUM_RUNTIME_VERSION_IS_BUILD_VERSION" ]\n'
+        "  }\n",
+        "flutter/skia/BUILD.gn (FreeType ohne dlopen)",
     )
 
 

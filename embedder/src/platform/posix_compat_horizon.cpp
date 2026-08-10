@@ -41,9 +41,11 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -309,6 +311,122 @@ int dirfd(DIR* dirp) {
   // Fehler, weil er erst später und an anderer Stelle auffiele.
   (void)dirp;
   errno = ENOTSUP;
+  return -1;
+}
+
+int fstatat(int dirfd, const char* path, struct stat* st, int flags) {
+  std::string full;
+  if (!ResolveAt(dirfd, path, &full)) {
+    return -1;
+  }
+  // AT_SYMLINK_NOFOLLOW ist bedeutungslos: Das Dateisystem der Switch kennt
+  // keine symbolischen Verweise, also gibt es nichts, dem man nicht folgen
+  // könnte.
+  (void)flags;
+  return ::stat(full.c_str(), st);
+}
+
+int fchdir(int fd) {
+  std::string path;
+  if (!LookupPath(fd, &path)) {
+    errno = EBADF;
+    return -1;
+  }
+  return ::chdir(path.c_str());
+}
+
+// off_t ist hier bereits 64 Bit breit, weshalb die LFS-Varianten nichts
+// anderes tun als ihre Grundformen.
+int open64(const char* path, int flags, ...) {
+  int mode = 0;
+  if ((flags & O_CREAT) != 0) {
+    va_list args;
+    va_start(args, flags);
+    mode = va_arg(args, int);
+    va_end(args);
+  }
+  return openat(AT_FDCWD, path, flags, mode);
+}
+
+int openat64(int dirfd, const char* path, int flags, ...) {
+  int mode = 0;
+  if ((flags & O_CREAT) != 0) {
+    va_list args;
+    va_start(args, flags);
+    mode = va_arg(args, int);
+    va_end(args);
+  }
+  return openat(dirfd, path, flags, mode);
+}
+
+ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
+  // Ohne echtes pread bleibt nur suchen, lesen, zurücksetzen. Das ist nicht
+  // atomar, deshalb die Sperre: Zwei Threads am selben Deskriptor würden
+  // sich sonst gegenseitig die Position verstellen. Sie gilt prozessweit
+  // statt pro Deskriptor – grob, aber pread ist hier kein heißer Pfad.
+  static std::mutex seek_mutex;
+  std::lock_guard<std::mutex> lock(seek_mutex);
+
+  const off_t previous = ::lseek(fd, 0, SEEK_CUR);
+  if (previous < 0) {
+    return -1;
+  }
+  if (::lseek(fd, offset, SEEK_SET) < 0) {
+    return -1;
+  }
+  const ssize_t read_bytes = ::read(fd, buf, count);
+  const int saved_errno = errno;
+  ::lseek(fd, previous, SEEK_SET);
+  errno = saved_errno;
+  return read_bytes;
+}
+
+int pipe(int fds[2]) {
+  // Horizon kennt keine Pipes, wohl aber Socketpaare. Der Eventhandler von
+  // dart:io nutzt denselben Ersatz, siehe eventhandler_horizon.cc.
+  return ::socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
+}
+
+int pthread_sigmask(int how, const sigset_t* set, sigset_t* oldset) {
+  // Horizon stellt keine Signale zu. "Alles blockiert" und "nichts
+  // blockiert" sind hier dasselbe, deshalb ist Nichtstun die richtige
+  // Antwort und kein verschwiegener Fehler.
+  (void)how;
+  (void)set;
+  if (oldset != nullptr) {
+    sigemptyset(oldset);
+  }
+  return 0;
+}
+
+ssize_t readlinkat(int dirfd, const char* path, char* buf, size_t bufsize) {
+  // Das Dateisystem der Switch kennt keine symbolischen Verweise. EINVAL ist
+  // genau das, was POSIX für "ist kein Verweis" vorsieht – der Aufrufer
+  // erfährt die Wahrheit also in seiner eigenen Sprache.
+  (void)dirfd;
+  (void)path;
+  (void)buf;
+  (void)bufsize;
+  errno = EINVAL;
+  return -1;
+}
+
+int symlinkat(const char* target, int dirfd, const char* path) {
+  (void)target;
+  (void)dirfd;
+  (void)path;
+  errno = ENOSYS;
+  return -1;
+}
+
+int utimensat(int dirfd, const char* path, const struct timespec times[2],
+              int flags) {
+  // Zeitstempel nachträglich zu setzen bietet der Dateidienst nicht an.
+  (void)dirfd;
+  (void)path;
+  (void)times;
+  (void)flags;
+  errno = ENOSYS;
   return -1;
 }
 

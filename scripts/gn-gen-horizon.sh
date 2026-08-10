@@ -31,10 +31,17 @@ DART_VERSION="${DART_VERSION:-02abc57898bebc334a997e609ce5827c8ef207d7}"
 # flutter_runtime_mode=release ist die Kernentscheidung des Projekts: Dart AOT
 # statt JIT. Nebenbei schaltet Dart dadurch Perfetto und den Profiler ab
 # (runtime/runtime_args.gni:98), die auf Horizon ohnehin nicht übersetzen.
+#
+# dart_use_fallback_root_certificates bindet die Wurzelzertifikate fest ins
+# Programm ein. Auf Horizon ist das keine Notlösung, sondern der einzige Weg:
+# Es gibt keinen Systemzertifikatspeicher und kein /etc/ssl, aus dem sich einer
+# lesen ließe. Ohne das Flag bleibt `root_certificates_pem_length` undefiniert
+# und jede HTTPS-Verbindung wäre unmöglich.
 "$GN" gen "$OUT" \
   --args="target_os=\"horizon\" target_cpu=\"arm64\" is_debug=false \
 flutter_runtime_mode=\"release\" dart_runtime_mode=\"release\" \
 dart_use_compressed_pointers=false \
+dart_use_fallback_root_certificates=true \
 buildtools_path=\"//flutter/buildtools\" \
 shell_enable_gl=false test_enable_gl=false test_enable_vulkan=false \
 devkitpro_root=\"$DEVKITPRO\" engine_version=\"$ENGINE_VERSION\" \

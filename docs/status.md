@@ -118,8 +118,20 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] **auf Hardware gestartet** – `FlutterEngineInitialize` liefert auf der
       echten Switch `kSuccess`, `FlutterEngineShutdown` läuft sauber durch.
       Damit stehen Shell, Threads und Nachrichtenschleifen.
-- [ ] `FlutterEngineRunInitialized` – linkt noch nicht, 100 offene Symbole
-      (Landkarte in `docs/porting-notes.md`)
+- [x] **dart:io vollständig** – alle Gruppen der Landkarte abgearbeitet:
+      Sockets, Namespace, Console und SSL-Kontext über erweiterte Guards auf
+      der POSIX-Ebene; `process_horizon.cc` und
+      `file_system_watcher_horizon.cc` als kurze, ehrlich ablehnende Fassungen;
+      `crypto_horizon.cc` mit `csrngGetRandomBytes` als Zufallsquelle
+- [x] **POSIX-Lücken geschlossen** – `fstatat`, `fchdir`, `open64`, `openat64`,
+      `pread`, `pipe`, `pthread_sigmask`, `readlinkat`, `symlinkat`,
+      `utimensat` in der Compat-Schicht des Embedders
+- [x] **Wurzelzertifikate eingebaut** – `dart_use_fallback_root_certificates`;
+      Horizon hat keinen Systemzertifikatspeicher, ohne das Flag wäre HTTPS
+      unmöglich
+- [x] **offene Symbole: 100 → 30**
+- [ ] `FlutterEngineRunInitialized` – noch offen: Skias FreeType-Anbindung
+      und fünf abseil-Symbole (`LowLevelAlloc`, `PerThreadSem`)
 
 ## Danach
 
