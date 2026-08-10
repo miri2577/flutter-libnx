@@ -69,20 +69,71 @@ void OS::Sleep(int64_t millis) {
   nanosleep(&req, nullptr);
 }
 
+// DEBUG-INSTRUMENTIERUNG (flutter-libnx): Dart-VM-Ausgaben landen sonst nur auf
+// stdout/stderr und sind auf echter Hardware unsichtbar (nxlink -s scheitert an
+// Docker-NAT). Damit VM-Meldungen - insbesondere ein FATAL direkt vor abort() -
+// sichtbar werden, hier zusaetzlich in eine eigene Datei auf der SD schreiben.
+// Pro Aufruf oeffnen/schliessen: langsam, aber garantiert auf die Karte
+// geflusht, bevor die VM den Prozess beendet. Bewusst eine SEPARATE Datei
+// (nicht ui_app.log), um den offenen FILE*-Handle des App-Loggers nicht zu
+// stoeren. Nach dem Debuggen wieder entfernen.
+//
+// Zweiter Weg neben der Datei: eine schwach gebundene Funktion, die der
+// Embedder bereitstellt. Damit gehen die Meldungen durch dieselbe TCP-Senke
+// wie alles andere und sind sofort am Entwicklungsrechner zu sehen, ohne die
+// Karte aus- und einzubauen. Bleibt der Embedder stumm, ist der Zeiger null
+// und es passiert schlicht nichts.
+extern "C" __attribute__((weak)) void flutter_libnx_vm_log(const char* text);
+
+namespace {
+void VmDebugFileV(const char* format, va_list args) {
+  // Erst formatieren, dann beide Wege bedienen: Eine va_list laesst sich nicht
+  // zweimal auswerten.
+  char buffer[1024];
+  va_list copy;
+  va_copy(copy, args);
+  const int written = vsnprintf(buffer, sizeof(buffer), format, copy);
+  va_end(copy);
+  if (written < 0) {
+    return;
+  }
+
+  if (flutter_libnx_vm_log != nullptr) {
+    flutter_libnx_vm_log(buffer);
+  }
+
+  FILE* f = fopen("sdmc:/switch/flutter-libnx/vm_debug.log", "a");
+  if (f == nullptr) {
+    return;
+  }
+  fputs(buffer, f);
+  fflush(f);
+  fclose(f);
+}
+}  // namespace
+
 void OS::Print(const char* format, ...) {
   va_list args;
   va_start(args, format);
+  va_list file_args;
+  va_copy(file_args, args);
   vfprintf(stdout, format, args);
-  va_end(args);
   fflush(stdout);
+  VmDebugFileV(format, file_args);
+  va_end(file_args);
+  va_end(args);
 }
 
 void OS::PrintErr(const char* format, ...) {
   va_list args;
   va_start(args, format);
+  va_list file_args;
+  va_copy(file_args, args);
   vfprintf(stderr, format, args);
-  va_end(args);
   fflush(stderr);
+  VmDebugFileV(format, file_args);
+  va_end(file_args);
+  va_end(args);
 }
 
 char* OS::VSCreate(Zone* zone, const char* format, va_list args) {
@@ -194,8 +245,12 @@ uintptr_t OS::GetProgramCounter() {
 }
 
 void OS::VFPrint(FILE* stream, const char* format, va_list args) {
+  va_list file_args;
+  va_copy(file_args, args);
   vfprintf(stream, format, args);
   fflush(stream);
+  VmDebugFileV(format, file_args);  // DEBUG-INSTRUMENTIERUNG (flutter-libnx)
+  va_end(file_args);
 }
 
 void OS::RegisterCodeObservers() {

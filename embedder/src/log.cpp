@@ -252,3 +252,26 @@ void LogWrite(LogLevel level, const char* file, int line, const char* fmt, ...) 
 }
 
 }  // namespace flutter_libnx
+
+// Gegenstelle zu der schwach gebundenen Funktion in os_horizon.cc.
+//
+// Die Dart-VM schreibt ihre Meldungen sonst nur nach stdout und stderr, und
+// die sind auf der Konsole unsichtbar. Gerade die letzte Zeile vor einem
+// abort() ist aber die aufschlussreichste. Über diesen Weg landet sie in
+// derselben Senke wie alles andere.
+extern "C" void flutter_libnx_vm_log(const char* text) {
+  if (text == nullptr) {
+    return;
+  }
+  // Die VM setzt ihre Zeilenumbrüche selbst; der Logger fügt einen eigenen an.
+  // Ohne dieses Abschneiden entstünden Leerzeilen.
+  std::string line(text);
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+    line.pop_back();
+  }
+  if (line.empty()) {
+    return;
+  }
+  flutter_libnx::LogWrite(flutter_libnx::LogLevel::kInfo, "dart-vm", 0, "%s",
+                          line.c_str());
+}
