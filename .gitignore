@@ -21,3 +21,4 @@ build/
 .packages
 examples/**/build/
 build-logs/
+examples/*/generated/
