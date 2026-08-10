@@ -88,8 +88,16 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       `NativeSymbolResolver`.
 - [x] Compressed Pointers abgeschaltet (`dart_use_compressed_pointers=false`) –
       Begründung in `docs/porting-notes.md`
-- [ ] Dart VM **linkt** – Bibliotheken noch offen: `vm/BUILD.gn` verlangt `dl`,
-      das es auf Horizon nicht gibt
+- [x] **Dart VM übersetzt vollständig** (AOT-Product-Modus)
+- [x] **`dart:io` portiert** – `poll`-basierter Eventhandler statt epoll,
+      `socketpair` statt Pipe, eigene `stdio`- und `socket_base`-Fassungen
+- [x] **Skia übersetzt** (Software-Konfiguration, kein GL/Vulkan)
+- [x] **Die komplette Engine übersetzt** – 3184 Objektdateien, AArch64 ELF64.
+      Alle Kernsymbole der Embedder-API vorhanden (`FlutterEngineRun`,
+      `FlutterEngineInitialize`, `SendWindowMetricsEvent`, `SendPointerEvent`,
+      `SendPlatformMessage`).
+- [ ] **statisch linkbare Bibliothek** – `flutter_engine_library` ist eine
+      `shared_library`, die es auf Horizon nicht gibt (siehe unten)
 - [ ] Skia (Software) kompiliert
 - [ ] Engine linkt
 

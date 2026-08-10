@@ -167,10 +167,8 @@ bool OSThread::GetCurrentStackBounds(uword* lower, uword* upper) {
   return false;
 }
 
-uword OSThread::GetCurrentStackPointer() {
-  uword stack_allocated_local = 0;
-  return reinterpret_cast<uword>(&stack_allocated_local);
-}
+// GetCurrentStackPointer() steht bereits in os_thread.cc und ist
+// plattformunabhaengig - hier definiert, gaebe es ein doppeltes Symbol.
 
 ThreadLocalKey OSThread::CreateThreadLocal(ThreadDestructor destructor) {
   pthread_key_t key = kUnsetThreadLocalKey;

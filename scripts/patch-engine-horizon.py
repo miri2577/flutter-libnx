@@ -1654,6 +1654,81 @@ def patch_absl_cctz(src: str) -> None:
     )
 
 
+def patch_implicit_float_conversion(src: str) -> None:
+    """-Wimplicit-float-conversion kennt nur Clang.
+
+    GCC hat kein Gegenstueck: -Wfloat-conversion ist naeher dran, meldet aber
+    auch Verengungen zwischen Gleitkommatypen, die hier nicht gemeint sind.
+    Die Warnung entfaellt fuer Horizon ersatzlos - sie dient dazu, unbemerkte
+    double-nach-float-Verengungen an der Dart-Grenze zu finden, und diese
+    Pruefung leistet der Upstream-Build auf den anderen Plattformen weiterhin.
+    """
+    for rel in ("flutter/lib/ui/BUILD.gn", "flutter/lib/gpu/BUILD.gn"):
+        replace_once(
+            os.path.join(src, rel),
+            '    "-Wimplicit-float-conversion",\n'
+            "  ]\n",
+            "  ]\n"
+            "  if (is_clang) {\n"
+            "    # Nur Clang kennt diese Warnung.\n"
+            '    cflags += [ "-Wimplicit-float-conversion" ]\n'
+            "  }\n",
+            f"{rel} (-Wimplicit-float-conversion)",
+        )
+
+
+def patch_embedder_surface(src: str) -> None:
+    path = os.path.join(src, "flutter", "shell", "platform", "embedder",
+                        "embedder_surface.cc")
+    # CreateResourceContext gibt sk_sp<GrDirectContext> zurueck. Fuer den
+    # Destruktor des Smart Pointers braucht der Compiler den vollstaendigen
+    # Typ. Auf Plattformen mit GPU-Backend kommt der Header transitiv ueber
+    # die GL-Header mit - ohne GL fehlt er.
+    replace_once(
+        path,
+        '#include "flutter/shell/platform/embedder/embedder_surface.h"\n',
+        '#include "flutter/shell/platform/embedder/embedder_surface.h"\n'
+        "\n"
+        '#include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"\n',
+        "flutter/shell/platform/embedder/embedder_surface.cc (GrDirectContext)",
+    )
+
+
+def patch_remaining_libdl(src: str) -> None:
+    """Die letzten Stellen, die -ldl anhaengen. libnx hat kein libdl."""
+    replace_once(
+        os.path.join(src, "flutter", "skia", "BUILD.gn"),
+        "    if (!is_qnx) {\n"
+        '      libs += [ "dl" ]\n'
+        "    }",
+        "    if (!is_qnx && !is_horizon) {\n"
+        '      libs += [ "dl" ]\n'
+        "    }",
+        "flutter/skia/BUILD.gn (libdl)",
+    )
+
+    replace_once(
+        os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                     "BUILD.gn"),
+        "config(\"libdart_builtin_config\") {\n"
+        "  if (is_win) {\n"
+        '    libs = [ "bcrypt.lib" ]\n'
+        "  } else {\n"
+        '    libs = [ "dl" ]\n'
+        "  }",
+        "config(\"libdart_builtin_config\") {\n"
+        "  if (is_win) {\n"
+        '    libs = [ "bcrypt.lib" ]\n'
+        "  } else if (is_horizon) {\n"
+        "    # Kein libdl auf Horizon.\n"
+        "    libs = []\n"
+        "  } else {\n"
+        '    libs = [ "dl" ]\n'
+        "  }",
+        "dart bin/BUILD.gn (libdl)",
+    )
+
+
 def patch_skia_osfile(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "skia", "src", "ports",
                         "SkOSFile_posix.cpp")
@@ -1849,6 +1924,9 @@ def main() -> int:
     patch_dart_ffi_dynamic_library(SRC)
     patch_tonic_build_config(SRC)
     patch_absl_cctz(SRC)
+    patch_implicit_float_conversion(SRC)
+    patch_embedder_surface(SRC)
+    patch_remaining_libdl(SRC)
 
     print("==> flutter/skia/BUILD.gn")
     patch_skia_config(SRC)

@@ -170,6 +170,37 @@ frühere Annahme: Der signalbasierte Profiler entfällt im Product-Modus tatsäc
 Die übrigen 562 offenen Symbole stammen aus anderen Zielen (`dart::Api::`,
 `dart::BaseTextBuffer::` und Verwandte) und lösen sich beim Zusammenlinken auf.
 
+### Die Engine übersetzt vollständig – und muss statisch gelinkt werden
+
+**3184 Objektdateien, AArch64 ELF64.** Alle Kernsymbole der Embedder-API sind vorhanden.
+
+Der Linkschritt scheiterte allerdings – und der Grund ist architektonisch, nicht technisch:
+Das Ziel `flutter_engine_library` ist eine **`shared_library`**. Horizon-Homebrew kennt
+keine dynamischen Bibliotheken, und devkitA64s eigene Bibliotheken sind folgerichtig nicht
+mit `-fPIC` übersetzt:
+
+```text
+relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `devoptab_list'
+which may bind externally can not be used when making a shared object
+```
+
+`libsysbase` ist die Newlib-Anbindung von devkitPro – sie *kann* gar nicht in eine Shared
+Library, weil es auf dieser Plattform keine gibt.
+
+**Konsequenz:** Die Engine wird als Objektsammlung bzw. statische Bibliothek gebaut und in
+die `.nro` gelinkt. Daneben steht dafür bereits
+`flutter/shell/platform/embedder:embedder_as_internal_library` – ein `source_set`, das
+genau dies liefert und ohne Änderung durchläuft.
+
+Das passt zu allem, was diese Portierung bisher ergeben hat: kein `dlopen`, keine
+Laufzeit-Symbolauflösung, keine nativen Assets, keine Shared Libraries. **Alles liegt in
+der NRO** – einschließlich, wie in Meilenstein 1b gezeigt, des Dart-AOT-Snapshots.
+
+Zwei Fehler wurden beim Linken sichtbar, die der Compiler nicht sehen konnte:
+`OSThread::GetCurrentStackPointer()` war doppelt definiert (die Funktion steht bereits
+plattformunabhängig in `os_thread.cc`), und zwei weitere Stellen hängten `-ldl` an –
+`flutter/skia/BUILD.gn`, wo QNX bereits ausgenommen war, und `dart/runtime/bin/BUILD.gn`.
+
 ### dart:io – Umfang vermessen und Strategie festgelegt
 
 Der Build erreichte `dart/runtime/bin`, die native Seite von `dart:io`: **16
