@@ -128,9 +128,39 @@ int main(int argc, char* argv[]) {
 
   if (result == kSuccess) {
     std::printf("  Engine-Handle: %p\n", static_cast<void*>(engine));
+    consoleUpdate(nullptr);
+
+    // Erst hier startet die Root-Isolate. Ohne AOT-Snapshot und ohne
+    // flutter_assets muss das scheitern; interessant ist, *wie weit* es
+    // kommt und ob es sauber scheitert statt abzustürzen.
+    LOG_INFO("FlutterEngineRunInitialized wird aufgerufen");
+    const FlutterEngineResult run = FlutterEngineRunInitialized(engine);
+    std::printf("  RunInitialized: %d (%s)\n", static_cast<int>(run),
+                ResultName(run));
+    LOG_INFO("FlutterEngineRunInitialized = %d (%s)", static_cast<int>(run),
+             ResultName(run));
+
+    if (run == kSuccess) {
+      // Fenstermaße sind das Erste, was ein Embedder melden muss – ohne sie
+      // legt die Engine kein Layout an.
+      FlutterWindowMetricsEvent metrics = {};
+      metrics.struct_size = sizeof(FlutterWindowMetricsEvent);
+      metrics.width = 1280;
+      metrics.height = 720;
+      metrics.pixel_ratio = 1.0;
+      const FlutterEngineResult sent =
+          FlutterEngineSendWindowMetricsEvent(engine, &metrics);
+      LOG_INFO("SendWindowMetricsEvent = %d (%s)", static_cast<int>(sent),
+               ResultName(sent));
+      std::printf("  WindowMetrics:  %d (%s)\n", static_cast<int>(sent),
+                  ResultName(sent));
+    }
+
+    consoleUpdate(nullptr);
+    LOG_INFO("Shutdown beginnt");
     FlutterEngineShutdown(engine);
     std::printf("  wieder heruntergefahren.\n");
-    LOG_INFO("Engine initialisiert und wieder heruntergefahren");
+    LOG_INFO("Shutdown abgeschlossen");
   } else {
     std::printf("  (ohne Snapshot und Assets erwartet)\n");
   }

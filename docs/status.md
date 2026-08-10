@@ -115,7 +115,11 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       statt epoll/timerfd, im Programm nachgewiesen.
 - [x] **systematische Suche nach stillen Plattformweichen**
       (`scripts/find-silent-fallbacks.py`) – ein echter Treffer, zwei Fehlalarme
-- [ ] auf Hardware gestartet
+- [x] **auf Hardware gestartet** – `FlutterEngineInitialize` liefert auf der
+      echten Switch `kSuccess`, `FlutterEngineShutdown` läuft sauber durch.
+      Damit stehen Shell, Threads und Nachrichtenschleifen.
+- [ ] `FlutterEngineRunInitialized` – linkt noch nicht, 100 offene Symbole
+      (Landkarte in `docs/porting-notes.md`)
 
 ## Danach
 

@@ -6,6 +6,67 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-10 – Die Engine initialisiert auf echter Switch-Hardware
+
+**Befund:** `engine_link_test.nro` (7,4 MB) per Netloader auf die Switch übertragen und
+gestartet. Protokoll über die TCP-Senke:
+
+```
+FlutterEngineRunsAOTCompiledDartCode = 1
+sizeof(FlutterProjectArgs) = 312
+FlutterEngineGetCurrentTime = 1672601270128108864
+FlutterEngineInitialize wird aufgerufen
+FlutterEngineInitialize = 0 (kSuccess)
+Engine initialisiert und wieder heruntergefahren
+```
+
+**Konsequenz:** Damit ist mehr belegt als „es linkt". `FlutterEngineInitialize` erzeugt
+die Shell samt ihrer Threads; wäre `MessageLoopImpl::Create()` noch bei `nullptr`
+geblieben, wäre genau hier Schluss gewesen. Auch `FlutterEngineShutdown` läuft sauber
+durch.
+
+Was damit **nicht** belegt ist: dass Dart-Code läuft. Die Root-Isolate startet erst bei
+`FlutterEngineRunInitialized`.
+
+---
+
+## 2026-08-10 – dart:io ist zweistufig, und die untere Stufe war übersehen
+
+**Befund:** Nach dem Einbau von `FlutterEngineRunInitialized` blieben **100** Symbole
+offen. Auffällig: `socket_base_linux.cc` trug bereits einen Horizon-Guard und übersetzte
+zu 192 Symbolen – trotzdem fehlten 29 `SocketBase::`-Funktionen.
+
+Der Grund ist der Aufbau von dart:io. `*_posix.cc` trägt die gemeinsame
+Unix-Implementierung, `*_linux.cc` nur das, was sich zwischen den Unixen unterscheidet.
+`socket_base_linux.cc` definiert `JoinMulticast`, `LeaveMulticast`, `LookupAddress`,
+`SetMulticastLoop` und `GetType` – `Read`, `Write`, `Close`, `GetPort` und der ganze Rest
+liegen in **`socket_base_posix.cc`**, deren Guard Horizon nicht kannte.
+
+**Konsequenz:** Guards müssen auf beiden Ebenen erweitert werden. Die POSIX-Ebene ist
+klein – nur drei Dateien in `runtime/bin` (`console_posix.cc`, `socket_base_posix.cc`,
+`virtual_memory_posix.cc`), von denen die letzte gar nicht referenziert wird.
+
+**Landkarte der 100 Symbole** (`scripts/group-missing-symbols.sh`,
+`scripts/analyze-dart-io-posix.py`):
+
+| Gruppe | Anzahl | Weg |
+|---|---|---|
+| `SocketBase` | 29 | `socket_base_posix.cc`: Guard erweitern; nur `ListInterfaces` braucht `getifaddrs` |
+| `Skia FreeType` | 22 | `SkTypeface_FreeType` fehlt trotz `skia_use_freetype = true` – Bibliothek wird nicht mitgelinkt |
+| `Process` | 14 | eigene Fassung: kein `fork`, kein `exec`, keine Signale |
+| `FileSystemWatcher` | 8 | eigene Fassung: kein inotify, `IsSupported()` = false |
+| `Namespace` | 7 | Guard erweitern – die `*at`-Funktionen gibt es jetzt |
+| POSIX-Lücken | 8 | `fstatat`, `readlinkat`, `symlinkat`, `utimensat`, `pread`, `pipe`, `pthread_sigmask`, `_getentropy_r` |
+| abseil | 5 | `LowLevelAlloc`, `SigSafeArena`, Thread-Identity |
+| Crypto/SSL | 4 | `getentropy` lässt sich über libnx' `csrngGetRandomBytes` bedienen |
+
+Wichtig an der Verteilung: Der größte Block (Sockets) ist reine Guard-Arbeit, kein
+Neuschreiben. Von den 1203 Zeilen in `process_linux.cc` muss dagegen nichts übernommen
+werden – auf Horizon gibt es keine Kindprozesse, also ist die ehrliche Fassung eine
+kurze.
+
+---
+
 ## 2026-08-10 – Eine Plattformweiche, die still nichts liefert
 
 **Befund:** `fml/message_loop_impl.cc:29-43` wählt die Nachrichtenschleife über eine
