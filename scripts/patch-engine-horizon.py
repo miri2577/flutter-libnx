@@ -386,13 +386,20 @@ INCLUDE_SCAN_ROOTS = (
     "flutter/shell/common",
     "flutter/shell/platform/embedder",
     "flutter/txt",
+    # Der Dart-Baum hat dieselbe Schwaeche: <climits> und <cstring> kommen
+    # unter glibc transitiv mit, unter newlib nicht.
+    "flutter/third_party/dart/runtime/lib",
+    "flutter/third_party/dart/runtime/vm",
+    "flutter/third_party/dart/runtime/bin",
+    "flutter/third_party/dart/runtime/platform",
 )
 
 INCLUDE_CHECKS = (
     ("cstring", ("string.h", "cstring"),
      re.compile(r"\b(memcpy|memset|memmove|memcmp|strlen|strcmp|strncmp|strdup)\s*\(")),
     ("climits", ("limits.h", "climits"),
-     re.compile(r"\b(INT_MAX|INT_MIN|UINT_MAX|LONG_MAX|LONG_MIN|ULONG_MAX|CHAR_BIT)\b")),
+     re.compile(r"\b(INT_MAX|INT_MIN|UINT_MAX|LONG_MAX|LONG_MIN|ULONG_MAX|"
+                r"LLONG_MAX|LLONG_MIN|ULLONG_MAX|SHRT_MAX|SHRT_MIN|CHAR_BIT)\b")),
 )
 
 
@@ -1387,6 +1394,266 @@ def patch_dart_bin_socket(src: str) -> None:
     )
 
 
+def patch_dart_bin_file(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "file_linux.cc")
+
+    replace_once(
+        path,
+        "#include <sys/mman.h>      // NOLINT\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/mman.h>      // NOLINT\n"
+        "#endif\n",
+        "dart bin/file_linux.cc (sys/mman.h)",
+    )
+
+    replace_once(
+        path,
+        "#include <sys/sendfile.h>  // NOLINT\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/sendfile.h>  // NOLINT\n"
+        "#endif\n",
+        "dart bin/file_linux.cc (sys/sendfile.h)",
+    )
+
+    # sendfile kopiert im Kernel und spart den Umweg ueber den Benutzerspeicher.
+    # Horizon hat es nicht - aber die Datei bringt fuer genau diesen Fall schon
+    # einen Rueckfallweg ueber read/write mit, den sie bei ENOSYS einschlaegt.
+    # Wir gehen direkt dorthin.
+    replace_once(
+        path,
+        "  int64_t offset = 0;\n"
+        "  intptr_t result = 1;\n"
+        "  while (result > 0) {\n"
+        "    // Loop to ensure we copy everything, and not only up to 2GB.\n"
+        "    result = NO_RETRY_EXPECTED(sendfile64(new_fd, old_fd, &offset, kMaxUint32));\n"
+        "  }\n",
+        "  int64_t offset = 0;\n"
+        "  intptr_t result = 1;\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Kein sendfile. Der vorhandene Rueckfallweg unten erledigt es ueber\n"
+        "  // read/write; ENOSYS ist genau die Bedingung, auf die er wartet.\n"
+        "  result = -1;\n"
+        "  errno = ENOSYS;\n"
+        "#else\n"
+        "  while (result > 0) {\n"
+        "    // Loop to ensure we copy everything, and not only up to 2GB.\n"
+        "    result = NO_RETRY_EXPECTED(sendfile64(new_fd, old_fd, &offset, kMaxUint32));\n"
+        "  }\n"
+        "#endif\n",
+        "dart bin/file_linux.cc (sendfile)",
+    )
+
+    # Vierte Stelle mit demselben Thema nach fml, Dart-VM und Skia: Ohne mmap
+    # wird gelesen statt abgebildet.
+    #
+    # Anders als dort sind hier zwei Faelle nicht erfuellbar:
+    #   * kReadExecute braucht ausfuehrbaren Speicher. Den gibt es nicht, und
+    #     der AOT-Weg dieses Projekts braucht ihn auch nicht - die
+    #     Snapshot-Instruktionen liegen in der .text der NRO.
+    #   * kReadWrite verlangt, dass Aenderungen in die Datei zurueckfliessen.
+    #     Ein Heap-Puffer kann das nicht.
+    # Beide melden deshalb nullptr statt eine abweichende Zusicherung.
+    replace_once(
+        path,
+        "  void* hint = nullptr;\n"
+        "  int prot = PROT_NONE;\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  if ((type != kReadOnly) || (start != nullptr)) {\n"
+        "    // Nur lesende Abbildungen ohne feste Zieladresse sind nachbildbar.\n"
+        "    return nullptr;\n"
+        "  }\n"
+        "  void* addr = malloc(length);\n"
+        "  if (addr == nullptr) {\n"
+        "    return nullptr;\n"
+        "  }\n"
+        "  int64_t total = 0;\n"
+        "  while (total < length) {\n"
+        "    const ssize_t bytes = TEMP_FAILURE_RETRY(\n"
+        "        pread(handle_->fd(), static_cast<char*>(addr) + total,\n"
+        "              length - total, position + total));\n"
+        "    if (bytes <= 0) {\n"
+        "      free(addr);\n"
+        "      return nullptr;\n"
+        "    }\n"
+        "    total += bytes;\n"
+        "  }\n"
+        "  return new MappedMemory(addr, length, /*should_unmap=*/true);\n"
+        "#else\n"
+        "  void* hint = nullptr;\n"
+        "  int prot = PROT_NONE;\n",
+        "dart bin/file_linux.cc (File::Map)",
+    )
+
+    replace_once(
+        path,
+        "  return new MappedMemory(addr, length, /*should_unmap=*/start == nullptr);\n"
+        "}\n"
+        "\n"
+        "void MappedMemory::Unmap() {\n"
+        "  int result = munmap(address_, size_);\n"
+        "  ASSERT(result == 0);\n",
+        "  return new MappedMemory(addr, length, /*should_unmap=*/start == nullptr);\n"
+        "#endif  // defined(DART_HOST_OS_HORIZON)\n"
+        "}\n"
+        "\n"
+        "void MappedMemory::Unmap() {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  free(address_);\n"
+        "#else\n"
+        "  int result = munmap(address_, size_);\n"
+        "  ASSERT(result == 0);\n"
+        "#endif\n",
+        "dart bin/file_linux.cc (MappedMemory::Unmap)",
+    )
+
+
+def patch_dart_bin_thread(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "thread_linux.cc")
+    # pthread_setname_np ist eine GNU-Erweiterung. Der Name dient unter Linux
+    # Werkzeugen wie top und gdb; auf Horizon gibt es weder das eine noch das
+    # andere, und newlib kennt die Funktion nicht.
+    replace_once(
+        path,
+        "  char truncated_name[16];\n"
+        '  snprintf(truncated_name, sizeof(truncated_name), "%s", name);\n'
+        "  pthread_setname_np(pthread_self(), truncated_name);\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "  char truncated_name[16];\n"
+        '  snprintf(truncated_name, sizeof(truncated_name), "%s", name);\n'
+        "  pthread_setname_np(pthread_self(), truncated_name);\n"
+        "#else\n"
+        "  // Kein pthread_setname_np in newlib, und kein Werkzeug, das den\n"
+        "  // Namen anzeigen wuerde.\n"
+        "  (void)name;\n"
+        "#endif\n",
+        "dart bin/thread_linux.cc (pthread_setname_np)",
+    )
+
+
+def patch_dart_bin_native_assets(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "native_assets_api_impl.cc")
+    # Ohne Laufzeit-Linker gibt es keinen Prozess-Handle, in dem sich Symbole
+    # nachschlagen liessen. Native Assets funktionieren auf Horizon
+    # grundsaetzlich nicht - siehe docs/target-apps.md.
+    replace_once(
+        path,
+        "void* NativeAssets::DlopenProcess(char** error) {\n"
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||              \\\n",
+        "void* NativeAssets::DlopenProcess(char** error) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Kein Laufzeit-Linker, also kein Prozess-Handle.\n"
+        "  return nullptr;\n"
+        "#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||            \\\n",
+        "dart bin/native_assets_api_impl.cc (DlopenProcess)",
+    )
+
+
+def patch_dart_platform_utils(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "platform", "utils.cc")
+    # basename() steht in <libgen.h>, das devkitA64 mitbringt. Die Datei bindet
+    # es nur im Linux-Zweig ein - dlfcn.h dagegen gibt es hier nicht.
+    replace_once(
+        path,
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||              \\\n"
+        "    defined(DART_HOST_OS_ANDROID)\n"
+        "#include <dlfcn.h>\n"
+        "#include <libgen.h>\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "// Kein dlfcn.h auf Horizon; libgen.h liefert basename.\n"
+        "#include <libgen.h>\n"
+        "#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||            \\\n"
+        "    defined(DART_HOST_OS_ANDROID)\n"
+        "#include <dlfcn.h>\n"
+        "#include <libgen.h>\n",
+        "dart platform/utils.cc (libgen.h)",
+    )
+
+
+def patch_dart_ffi_dynamic_library(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "lib",
+                        "ffi_dynamic_library.cc")
+    # Dieselbe Lage wie bei den native assets: Ohne Laufzeit-Linker gibt es
+    # keinen Prozess-Handle. Dart.dl.processLibrary liefert damit einen
+    # nullptr-Handle; jede Symbolsuche darauf schlaegt fehl, was die ehrliche
+    # Antwort ist.
+    replace_once(
+        path,
+        "DEFINE_NATIVE_ENTRY(Ffi_dl_processLibrary, 0, 0) {\n"
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||              \\\n",
+        "DEFINE_NATIVE_ENTRY(Ffi_dl_processLibrary, 0, 0) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Kein Laufzeit-Linker, also kein Prozess-Handle.\n"
+        "  return DynamicLibrary::New(nullptr, false);\n"
+        "#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_MACOS) ||            \\\n",
+        "dart lib/ffi_dynamic_library.cc (Ffi_dl_processLibrary)",
+    )
+
+    # Zweite Stelle: Symbolsuche im eigenen Prozess. Ohne Laufzeit-Linker
+    # nicht moeglich; nullptr plus gesetzte Fehlermeldung ist der Weg, den
+    # der Aufrufer ohnehin behandelt.
+    replace_once(
+        path,
+        "  // Resolution in current process.\n"
+        "#if !defined(DART_HOST_OS_WINDOWS)\n"
+        "  void* const result = Utils::ResolveSymbolInDynamicLibrary(\n"
+        "      RTLD_DEFAULT, symbol.ToCString(), error);\n",
+        "  // Resolution in current process.\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Symbole lassen sich zur Laufzeit nicht ueber Namen aufloesen.\n"
+        "  void* const result = nullptr;\n"
+        "  *error = OS::SCreate(/*use malloc*/ nullptr,\n"
+        "                       \"Symbol lookup by name is not available on \"\n"
+        "                       \"Horizon: there is no runtime linker \"\n"
+        "                       \"(symbol '%s').\",\n"
+        "                       symbol.ToCString());\n"
+        "#elif !defined(DART_HOST_OS_WINDOWS)\n"
+        "  void* const result = Utils::ResolveSymbolInDynamicLibrary(\n"
+        "      RTLD_DEFAULT, symbol.ToCString(), error);\n",
+        "dart lib/ffi_dynamic_library.cc (Symbolsuche im Prozess)",
+    )
+
+
+def patch_tonic_build_config(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "tonic", "common",
+                        "build_config.h")
+    # Dasselbe Muster wie in fml/build_config.h.
+    replace_once(
+        path,
+        "#elif defined(__QNXNTO__)\n"
+        "#define OS_QNX 1\n"
+        "#else\n"
+        "#error Please add support for your platform in tonic/common/build_config.h",
+        "#elif defined(__QNXNTO__)\n"
+        "#define OS_QNX 1\n"
+        "#elif defined(__SWITCH__)\n"
+        "#define OS_HORIZON 1\n"
+        "#else\n"
+        "#error Please add support for your platform in tonic/common/build_config.h",
+        "tonic/common/build_config.h",
+    )
+
+
+def patch_absl_cctz(src: str) -> None:
+    path = os.path.join(src, "third_party", "abseil-cpp", "absl", "time",
+                        "internal", "cctz", "src", "time_zone_libc.cc")
+    # newlib fuehrt keine tm_gmtoff/tm_zone in struct tm, wohl aber die
+    # Globalen _timezone und _tzname (time.h:139-147). Das ist genau die
+    # Ausgangslage des NaCl-Zweigs, der ebenfalls fuer schlanke Plattformen
+    # gedacht ist - Horizon reiht sich dort ein.
+    replace_once(
+        path,
+        "#elif defined(__native_client__) || defined(__myriad2__) || \\\n"
+        "    defined(__EMSCRIPTEN__)",
+        "#elif defined(__native_client__) || defined(__myriad2__) || \\\n"
+        "    defined(__EMSCRIPTEN__) || defined(__SWITCH__)",
+        "abseil cctz time_zone_libc.cc",
+    )
+
+
 def patch_skia_osfile(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "skia", "src", "ports",
                         "SkOSFile_posix.cpp")
@@ -1575,6 +1842,13 @@ def main() -> int:
     patch_dart_bin_platform(SRC)
     patch_dart_bin_socket_base(SRC)
     patch_dart_bin_socket(SRC)
+    patch_dart_bin_file(SRC)
+    patch_dart_bin_thread(SRC)
+    patch_dart_bin_native_assets(SRC)
+    patch_dart_platform_utils(SRC)
+    patch_dart_ffi_dynamic_library(SRC)
+    patch_tonic_build_config(SRC)
+    patch_absl_cctz(SRC)
 
     print("==> flutter/skia/BUILD.gn")
     patch_skia_config(SRC)

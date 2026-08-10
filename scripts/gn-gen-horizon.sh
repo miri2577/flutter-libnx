@@ -35,6 +35,7 @@ DART_VERSION="${DART_VERSION:-02abc57898bebc334a997e609ce5827c8ef207d7}"
   --args="target_os=\"horizon\" target_cpu=\"arm64\" is_debug=false \
 flutter_runtime_mode=\"release\" dart_runtime_mode=\"release\" \
 dart_use_compressed_pointers=false \
+buildtools_path=\"//flutter/buildtools\" \
 devkitpro_root=\"$DEVKITPRO\" engine_version=\"$ENGINE_VERSION\" \
 content_hash=\"$ENGINE_VERSION\" skia_version=\"$SKIA_VERSION\" \
 dart_version=\"$DART_VERSION\"" \
