@@ -224,6 +224,30 @@ def patch_compiler_config(src: str) -> None:
         '      # Skias Bezeichnung fuer "POSIX-artig" und trifft zu: newlib\n'
         '      # liefert die benutzten Schnittstellen, etwa POSIX-Semaphoren.\n'
         '      "SK_BUILD_FOR_UNIX",\n'
+        '\n'
+        '      # glibc fuehrt fuer Large File Support eine zweite Namensfamilie\n'
+        '      # (stat64, openat64, ino64_t ...). newlib braucht sie nicht,\n'
+        '      # weil off_t und ino_t dort ohnehin 64 Bit breit sind - es gibt\n'
+        '      # also nur die unsuffigierte Fassung. Dart benutzt durchgaengig\n'
+        '      # die 64er-Namen.\n'
+        '      #\n'
+        '      # Die Abbildung ist keine Notloesung, sondern die Feststellung\n'
+        '      # einer Identitaet: Auf dieser Plattform *sind* stat und stat64\n'
+        '      # dasselbe. Zentral hier statt an rund zwanzig Einzelstellen.\n'
+        '      "stat64=stat",\n'
+        '      "fstat64=fstat",\n'
+        '      "lstat64=lstat",\n'
+        '      "fstatat64=fstatat",\n'
+        '      "openat64=openat",\n'
+        '      "open64=open",\n'
+        '      "creat64=creat",\n'
+        '      "lseek64=lseek",\n'
+        '      "ftruncate64=ftruncate",\n'
+        '      "truncate64=truncate",\n'
+        '      "readdir64=readdir",\n'
+        '      "dirent64=dirent",\n'
+        '      "ino64_t=ino_t",\n'
+        '      "off64_t=off_t",\n'
         '    ]\n'
         '\n'
         '    cflags += [\n'
@@ -942,7 +966,9 @@ DART_BIN_POSIX_REUSE = (
     "socket_base_linux.cc",
     "socket_linux.cc",
     "sync_socket_linux.cc",
-    "stdio_linux.cc",
+    # stdio_linux.cc fehlt hier bewusst: Die Datei besteht fast vollstaendig
+    # aus Terminalsteuerung ueber termios, die es auf Horizon nicht gibt.
+    # Dafuer existiert stdio_horizon.cc.
     "file_linux.cc",
     "directory_linux.cc",
     "platform_linux.cc",
@@ -980,18 +1006,47 @@ def patch_dart_bin_guards(src: str) -> None:
         print(f"    erweitert: bin/{name}")
 
 
-def patch_dart_bin_headers(src: str) -> None:
-    base = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin")
+def patch_dart_bin_headers(src: str, repo: str) -> None:
+    import shutil
 
-    # socket_base_linux.h umfasst 17 Zeilen reiner Systemincludes und passt
-    # unveraendert.
+    base = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin")
+    files = os.path.join(repo, "patches", "flutter-engine", "files", "dart", "bin")
+
+    for name in ("eventhandler_horizon.h", "eventhandler_horizon.cc",
+                 "socket_base_horizon.h", "stdio_horizon.cc"):
+        shutil.copyfile(os.path.join(files, name), os.path.join(base, name))
+        print(f"    kopiert: dart/runtime/bin/{name}")
+
+    replace_once(
+        os.path.join(base, "io_impl_sources.gni"),
+        '  "eventhandler_linux.cc",\n',
+        '  "eventhandler_horizon.cc",\n  "eventhandler_horizon.h",\n'
+        '  "eventhandler_linux.cc",\n',
+        "dart bin/io_impl_sources.gni",
+    )
+
+    replace_once(
+        os.path.join(base, "io_impl_sources.gni"),
+        '  "stdio_linux.cc",\n',
+        '  "stdio_horizon.cc",\n  "stdio_linux.cc",\n',
+        "dart bin/io_impl_sources.gni (stdio)",
+    )
+
+
+    # socket_base_linux.h bindet <sys/un.h> ein, das libnx nicht hat - deshalb
+    # eine eigene, ansonsten gleiche Fassung.
     replace_once(
         os.path.join(base, "socket_base.h"),
-        '#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)\n'
-        '#include "bin/socket_base_linux.h"\n',
-        '#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID) ||      \\\n'
-        '    defined(DART_HOST_OS_HORIZON)\n'
-        '#include "bin/socket_base_linux.h"\n',
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "bin/socket_base_win.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "bin/socket_base_win.h"\n'
+        "#elif defined(DART_HOST_OS_HORIZON)\n"
+        '#include "bin/socket_base_horizon.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
         "dart bin/socket_base.h",
     )
 
@@ -1010,6 +1065,325 @@ def patch_dart_bin_headers(src: str) -> None:
         "#else\n"
         "#error Unknown target os.",
         "dart bin/eventhandler.h",
+    )
+
+
+def patch_dart_bin_platform(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "platform_linux.cc")
+
+    replace_once(
+        path,
+        "#include <sys/prctl.h>\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/prctl.h>  // NOLINT\n"
+        "#endif\n",
+        "dart bin/platform_linux.cc (prctl-Include)",
+    )
+
+    # Horizon kennt weder prctl noch einen Prozessnamen, den man setzen
+    # koennte. Die Angabe dient unter Linux nur Werkzeugen wie top.
+    replace_once(
+        path,
+        "void Platform::SetProcessName(const char* name) {\n"
+        "  prctl(PR_SET_NAME, reinterpret_cast<unsigned long>(name), 0, 0, 0);  // NOLINT\n"
+        "}",
+        "void Platform::SetProcessName(const char* name) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Horizon fuehrt keinen setzbaren Prozessnamen.\n"
+        "  (void)name;\n"
+        "#else\n"
+        "  prctl(PR_SET_NAME, reinterpret_cast<unsigned long>(name), 0, 0, 0);  // NOLINT\n"
+        "#endif\n"
+        "}",
+        "dart bin/platform_linux.cc (SetProcessName)",
+    )
+
+    # Der gesamte Absturz-Handler entfaellt auf Horizon. Speicherfehler landen
+    # dort nicht in einem POSIX-Signal, sondern in der Ausnahmebehandlung des
+    # Systems; sigaction mit SA_SIGINFO, sa_sigaction und setrlimit gibt es in
+    # newlib ohnehin nicht. Platform::Initialize meldet deshalb schlicht Erfolg.
+    replace_once(
+        path,
+        "bool Platform::Initialize() {\n"
+        "  // Turn off the signal handler for SIGPIPE",
+        "bool Platform::Initialize() {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Horizon liefert keine POSIX-Signale fuer Speicherfehler, und\n"
+        "  // newlib kennt weder SA_SIGINFO noch setrlimit. Die Absturzausgabe\n"
+        "  // von Dart erscheint auf dieser Plattform folglich nie - die\n"
+        "  // Diagnose laeuft ueber die Logsenke des Embedders.\n"
+        "  return true;\n"
+        "#else\n"
+        "  // Turn off the signal handler for SIGPIPE",
+        "dart bin/platform_linux.cc (Initialize Anfang)",
+    )
+
+    replace_once(
+        path,
+        "    perror(\"sigaction() failed.\");\n"
+        "    return false;\n"
+        "  }\n"
+        "  return true;\n"
+        "}\n"
+        "\n"
+        "int Platform::NumberOfProcessors() {",
+        "    perror(\"sigaction() failed.\");\n"
+        "    return false;\n"
+        "  }\n"
+        "  return true;\n"
+        "#endif  // defined(DART_HOST_OS_HORIZON)\n"
+        "}\n"
+        "\n"
+        "int Platform::NumberOfProcessors() {",
+        "dart bin/platform_linux.cc (Initialize Ende)",
+    )
+
+    # Core-Dumps gibt es auf Horizon nicht, und damit auch keine Grenze dafuer.
+    replace_once(
+        path,
+        "void Platform::SetCoreDumpResourceLimit(int value) {\n"
+        "  rlimit limit = {static_cast<rlim_t>(value), static_cast<rlim_t>(value)};\n"
+        "  setrlimit(RLIMIT_CORE, &limit);\n"
+        "}",
+        "void Platform::SetCoreDumpResourceLimit(int value) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Kein Core-Dump, keine Grenze. Absturzabbilder liefert auf Horizon\n"
+        "  // allenfalls das System selbst.\n"
+        "  (void)value;\n"
+        "#else\n"
+        "  rlimit limit = {static_cast<rlim_t>(value), static_cast<rlim_t>(value)};\n"
+        "  setrlimit(RLIMIT_CORE, &limit);\n"
+        "#endif\n"
+        "}",
+        "dart bin/platform_linux.cc (SetCoreDumpResourceLimit)",
+    )
+
+    # Der Handler selbst benutzt siginfo_t::si_addr, das newlib nicht kennt.
+    replace_once(
+        path,
+        "static void segv_handler(int signal, siginfo_t* siginfo, void* context) {",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "static void segv_handler(int signal, siginfo_t* siginfo, void* context) {",
+        "dart bin/platform_linux.cc (segv_handler Anfang)",
+    )
+
+    replace_once(
+        path,
+        "  Dart_DumpNativeStackTrace(context);\n"
+        "  Dart_PrepareToAbort();\n"
+        "  abort();\n"
+        "}",
+        "  Dart_DumpNativeStackTrace(context);\n"
+        "  Dart_PrepareToAbort();\n"
+        "  abort();\n"
+        "}\n"
+        "#endif  // !defined(DART_HOST_OS_HORIZON)",
+        "dart bin/platform_linux.cc (segv_handler Ende)",
+    )
+
+    # strcode() entschluesselt si_code-Konstanten fuer den Absturz-Handler.
+    # newlib definiert sie nicht, und Horizon liefert ohnehin keine
+    # POSIX-Signale fuer Speicherfehler - dort greift die eigene
+    # Ausnahmebehandlung des Systems.
+    replace_once(
+        path,
+        "static const char* strcode(int si_signo, int si_code) {\n"
+        "#define CASE(signo, code)",
+        "static const char* strcode(int si_signo, int si_code) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  (void)si_signo;\n"
+        "  (void)si_code;\n"
+        "#else\n"
+        "#define CASE(signo, code)",
+        "dart bin/platform_linux.cc (strcode Anfang)",
+    )
+
+    replace_once(
+        path,
+        "  CASE(SIGTRAP, TRAP_TRACE);\n"
+        "#undef CASE\n"
+        '  return "?";',
+        "  CASE(SIGTRAP, TRAP_TRACE);\n"
+        "#undef CASE\n"
+        "#endif  // defined(DART_HOST_OS_HORIZON)\n"
+        '  return "?";',
+        "dart bin/platform_linux.cc (strcode Ende)",
+    )
+
+    replace_once(
+        path,
+        "#include <sys/resource.h>\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/resource.h>\n"
+        "#endif\n",
+        "dart bin/platform_linux.cc (sys/resource.h)",
+    )
+
+    replace_once(
+        path,
+        "#include <sys/utsname.h>\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <sys/utsname.h>  // uname; gibt es auf Horizon nicht\n"
+        "#endif\n",
+        "dart bin/platform_linux.cc (sys/utsname.h)",
+    )
+
+    # Die Switch hat vier Kerne, von denen Homebrew regulaer drei benutzen darf;
+    # der vierte ist dem System vorbehalten. sysconf kennt newlib nicht.
+    replace_once(
+        path,
+        "int Platform::NumberOfProcessors() {\n"
+        "  return sysconf(_SC_NPROCESSORS_ONLN);\n"
+        "}",
+        "int Platform::NumberOfProcessors() {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Vier Kerne, davon drei fuer Homebrew nutzbar.\n"
+        "  return 3;\n"
+        "#else\n"
+        "  return sysconf(_SC_NPROCESSORS_ONLN);\n"
+        "#endif\n"
+        "}",
+        "dart bin/platform_linux.cc (NumberOfProcessors)",
+    )
+
+    # uname gibt es nicht. Die Firmwareversion waere ueber libnx zu haben,
+    # zoege aber <switch.h> in die Dart-VM. nullptr heisst "unbekannt".
+    replace_once(
+        path,
+        "const char* Platform::OperatingSystemVersion() {\n"
+        "#if defined(DART_HOST_OS_ANDROID)\n",
+        "const char* Platform::OperatingSystemVersion() {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  return nullptr;\n"
+        "#elif defined(DART_HOST_OS_ANDROID)\n",
+        "dart bin/platform_linux.cc (OperatingSystemVersion)",
+    )
+
+    replace_once(
+        path,
+        "const char* Platform::ResolveExecutablePath() {\n"
+        '  return File::ReadLink("/proc/self/exe");\n'
+        "}",
+        "const char* Platform::ResolveExecutablePath() {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  return nullptr;  // kein /proc\n"
+        "#else\n"
+        '  return File::ReadLink("/proc/self/exe");\n'
+        "#endif\n"
+        "}",
+        "dart bin/platform_linux.cc (ResolveExecutablePath)",
+    )
+
+    # Es gibt kein /proc. Der Rueckgabewert -1 bedeutet "unbekannt"; Dart
+    # meldet dann keinen aufgeloesten Pfad, statt einen erfundenen zu liefern.
+    replace_once(
+        path,
+        "intptr_t Platform::ResolveExecutablePathInto(char* result, size_t result_size) {\n"
+        '  return File::ReadLinkInto("/proc/self/exe", result, result_size);\n'
+        "}",
+        "intptr_t Platform::ResolveExecutablePathInto(char* result, size_t result_size) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Kein /proc: Der eigene Pfad ist ueber diesen Weg nicht zu\n"
+        "  // ermitteln. -1 heisst unbekannt.\n"
+        "  return -1;\n"
+        "#else\n"
+        '  return File::ReadLinkInto("/proc/self/exe", result, result_size);\n'
+        "#endif\n"
+        "}",
+        "dart bin/platform_linux.cc (ResolveExecutablePathInto)",
+    )
+
+
+def patch_dart_bin_socket_base(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "socket_base_linux.cc")
+    # ifaddrs.h wird eingebunden, aber in dieser Datei nirgends benutzt - wie
+    # zuvor schon sys/mman.h in fml/platform/posix/file_posix.cc. Fuer Horizon
+    # ausgeklammert statt entfernt, weil andere Plattformen ihn ueber diesen
+    # Weg transitiv beziehen koennten.
+    replace_once(
+        path,
+        "#include <ifaddrs.h>      // NOLINT\n",
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "#include <ifaddrs.h>      // NOLINT\n"
+        "#endif\n",
+        "dart bin/socket_base_linux.cc (ifaddrs.h)",
+    )
+
+    # Die Datei bindet ihren Plattformheader am Ende direkt ein. Fuer Horizon
+    # muss das der eigene sein, sonst kommt <sys/un.h> ueber die Hintertuer
+    # wieder herein.
+    replace_once(
+        path,
+        '#include "bin/socket_base_linux.h"\n',
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        '#include "bin/socket_base_horizon.h"\n'
+        "#else\n"
+        '#include "bin/socket_base_linux.h"\n'
+        "#endif\n",
+        "dart bin/socket_base_linux.cc (Plattformheader)",
+    )
+
+
+def patch_dart_bin_socket(src: str) -> None:
+    base = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin")
+
+    # stat64/fstat64 sind die Large-File-Varianten von glibc. newlib fuehrt
+    # off_t ohnehin 64-bittig und kennt nur stat/fstat.
+    replace_once(
+        os.path.join(base, "socket_base_linux.cc"),
+        "int SocketBase::GetType(intptr_t fd) {\n"
+        "  struct stat64 buf;\n"
+        "  int result = TEMP_FAILURE_RETRY(fstat64(fd, &buf));",
+        "int SocketBase::GetType(intptr_t fd) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  struct stat buf;\n"
+        "  int result = TEMP_FAILURE_RETRY(fstat(fd, &buf));\n"
+        "#else\n"
+        "  struct stat64 buf;\n"
+        "  int result = TEMP_FAILURE_RETRY(fstat64(fd, &buf));\n"
+        "#endif",
+        "dart bin/socket_base_linux.cc (fstat64)",
+    )
+
+    socket_linux = os.path.join(base, "socket_linux.cc")
+
+    # ENONET ("Machine is not on the network") ist eine Linux-Eigenheit.
+    replace_once(
+        socket_linux,
+        "         (error == ENOPROTOOPT) || (error == EHOSTDOWN) || (error == ENONET) ||",
+        "         (error == ENOPROTOOPT) || (error == EHOSTDOWN) ||\n"
+        "#if !defined(DART_HOST_OS_HORIZON)\n"
+        "         (error == ENONET) ||\n"
+        "#endif",
+        "dart bin/socket_linux.cc (ENONET)",
+    )
+
+    # accept4 setzt Flags gleich beim Annehmen; newlib kennt nur accept.
+    # Dieselben Eigenschaften lassen sich danach ueber fcntl setzen - genau
+    # das tat auch Linux, bevor accept4 hinzukam.
+    replace_once(
+        socket_linux,
+        "  socket = TEMP_FAILURE_RETRY(accept4(fd, &client_addr.addr, &client_addr.size,\n"
+        "                                      SOCK_NONBLOCK | SOCK_CLOEXEC));",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  socket = TEMP_FAILURE_RETRY(\n"
+        "      accept(fd, &client_addr.addr, &client_addr.size));\n"
+        "  if (socket != -1) {\n"
+        "    // accept4 haette das in einem Schritt erledigt; ohne es bleibt der\n"
+        "    // Weg ueber fcntl. Close-on-exec ist auf Horizon gegenstandslos,\n"
+        "    // weil es kein exec gibt.\n"
+        "    if (!FDUtils::SetNonBlocking(socket)) {\n"
+        "      close(socket);\n"
+        "      socket = -1;\n"
+        "    }\n"
+        "  }\n"
+        "#else\n"
+        "  socket = TEMP_FAILURE_RETRY(accept4(fd, &client_addr.addr, &client_addr.size,\n"
+        "                                      SOCK_NONBLOCK | SOCK_CLOEXEC));\n"
+        "#endif",
+        "dart bin/socket_linux.cc (accept4)",
     )
 
 
@@ -1197,6 +1571,10 @@ def main() -> int:
 
     print("==> dart:io – Wächter für POSIX-gleiche Dateien")
     patch_dart_bin_guards(SRC)
+    patch_dart_bin_headers(SRC, repo_root)
+    patch_dart_bin_platform(SRC)
+    patch_dart_bin_socket_base(SRC)
+    patch_dart_bin_socket(SRC)
 
     print("==> flutter/skia/BUILD.gn")
     patch_skia_config(SRC)
