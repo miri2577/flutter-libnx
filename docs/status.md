@@ -130,8 +130,14 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       Horizon hat keinen Systemzertifikatspeicher, ohne das Flag wäre HTTPS
       unmöglich
 - [x] **offene Symbole: 100 → 30**
-- [ ] `FlutterEngineRunInitialized` – noch offen: Skias FreeType-Anbindung
-      und fünf abseil-Symbole (`LowLevelAlloc`, `PerThreadSem`)
+- [x] **alle Symbole aufgelöst – die NRO linkt vollständig** (13 MB).
+      Nachgewiesen im Programm: alle sechs benutzten Funktionen der
+      Embedder-API, 49 `SkTypeface_FreeType`-Symbole,
+      `SkFontMgr_New_Custom_Empty`, `absl::…::LowLevelAlloc::Alloc`,
+      `dart::Dart::Init`, `fml::MessageLoopHorizon::Run` und
+      `dart::bin::root_certificates_pem_length`
+- [ ] `FlutterEngineRunInitialized` auf Hardware – Upload braucht ein
+      geöffnetes hbmenu auf der Konsole
 
 ## Danach
 
