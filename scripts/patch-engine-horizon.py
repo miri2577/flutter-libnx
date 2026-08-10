@@ -1418,6 +1418,22 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
         "dart bin/security_context_linux.cc (Guard)",
     )
 
+    # Die Wurzelzertifikate haengen an zwei Bedingungen: dem Argument
+    # dart_use_fallback_root_certificates und dieser Plattformliste. Das
+    # Argument allein genuegt nicht - ohne is_horizon in der Liste bleibt
+    # root_certificates_pem_length undefiniert.
+    #
+    # Auf Horizon ist der eingebaute Satz kein Ersatz, sondern die einzige
+    # Moeglichkeit: Es gibt keinen Systemzertifikatspeicher und kein /etc/ssl.
+    replace_once(
+        os.path.join(base, "BUILD.gn"),
+        "    if (is_linux || is_win || is_fuchsia) {\n"
+        "      if (dart_use_fallback_root_certificates) {\n",
+        "    if (is_linux || is_win || is_fuchsia || is_horizon) {\n"
+        "      if (dart_use_fallback_root_certificates) {\n",
+        "dart bin/BUILD.gn (fallback_root_certificates)",
+    )
+
     # socket_base_linux.h bindet <sys/un.h> ein, das libnx nicht hat - deshalb
     # eine eigene, ansonsten gleiche Fassung.
     replace_once(

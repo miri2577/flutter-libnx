@@ -127,7 +127,12 @@ void Process::ClearSignalHandler(intptr_t signal, Dart_Port port) {
 
 void Process::ClearSignalHandlerByFd(intptr_t fd, Dart_Port port) {}
 
-void Process::ClearAllSignalHandlers() {}
+// ClearAllSignalHandlers gehoert absichtlich nicht hierher: Sie steht bereits
+// plattformneutral in process.cc:71. Sie hier noch einmal zu schreiben, weil
+// sie ins Bild zu passen schien, hat einen Linkfehler wegen doppelter
+// Definition ergeben. Massgeblich ist, welche Symbole der Linker wirklich
+// vermisst - nicht, welche Geschwister eine Datei vollstaendig aussehen
+// lassen.
 
 void Process::Init() {
   ASSERT(Process::global_exit_code_mutex_ == nullptr);

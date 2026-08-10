@@ -20,3 +20,4 @@ build/
 .dart_tool/
 .packages
 examples/**/build/
+build-logs/

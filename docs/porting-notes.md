@@ -59,6 +59,34 @@ Build-Ursachen statt Portierungsursachen.
 
 ---
 
+## 2026-08-10 – Zwei Fehler, die sich gegenseitig verdeckt haben
+
+**Befund 1 – Geschwister mitgenommen.** `process_horizon.cc` bekam
+`Process::ClearAllSignalHandlers()` dazu, weil sie neben `ClearSignalHandler` und
+`ClearSignalHandlerByFd` ins Bild passte. Sie stand aber nicht in der Liste der
+vermissten Symbole – aus gutem Grund: `process.cc:71` definiert sie plattformneutral.
+Ergebnis war ein Linkfehler wegen doppelter Definition.
+
+*Regel:* Maßgeblich ist, welche Symbole der Linker wirklich vermisst, nicht welche
+Geschwister eine Datei vollständig aussehen lassen. Dieselbe Falle wie früher bei
+`GetCurrentStackPointer()` in `os_thread_horizon.cc`.
+
+**Befund 2 – ein Zähler, der wegsieht.** `relink-example.sh` zählte nur
+`undefined reference` und meldete **„0 undefinierte Symbole"**, während der Link an
+ebendieser doppelten Definition scheiterte. Dazu kam, dass das Protokoll unter `/tmp`
+lag und zwischen zwei WSL-Aufrufen verschwand – ein leeres Protokoll sieht bei einer
+reinen Zählung genauso aus wie ein fehlerfreies.
+
+Aufgefallen ist es nur, weil die anschließende Prüfung die ELF nicht fand. Beinahe wäre
+ein Erfolg gemeldet worden, den es nicht gab.
+
+*Konsequenz:* Das Skript prüft jetzt dreierlei getrennt – undefinierte Symbole, doppelte
+Definitionen, sonstige Linkerfehler – und bricht ab, wenn das Protokoll leer ist. Es
+schreibt außerdem ins Repository statt nach `/tmp`. Ein Prüfwerkzeug, das nur eine
+Fehlerart kennt, meldet bei jeder anderen Erfolg.
+
+---
+
 ## 2026-08-10 – Drei Build-Ursachen: FreeType, Zertifikate, abseil
 
 **Befund 1 – FreeType.** Die Bibliothek selbst wurde gebaut (24 Objektdateien), Skias

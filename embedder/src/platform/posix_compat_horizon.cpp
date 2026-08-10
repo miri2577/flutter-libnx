@@ -314,6 +314,27 @@ int dirfd(DIR* dirp) {
   return -1;
 }
 
+long sysconf(int name) {
+  // Gefragt wird in der Praxis nur nach zweierlei. abseils LowLevelAlloc
+  // holt sich hierüber die Seitengröße für seine Arena.
+  switch (name) {
+    case _SC_PAGESIZE:
+      // Horizon arbeitet mit 4-KB-Seiten. Dieselbe Größe verlangt libnx für
+      // Thread-Stacks, siehe os_thread_horizon.cc.
+      return 4096;
+    case _SC_NPROCESSORS_ONLN:
+      // Der Switch hat vier Cortex-A57-Kerne, von denen Horizon drei für
+      // Anwendungen freigibt; der vierte gehört dem System. Derselbe Wert
+      // steht in os_horizon.cc.
+      return 3;
+    default:
+      // Nicht raten: Ein erfundener Wert wäre schlimmer als eine Absage,
+      // weil er erst viel später und an anderer Stelle auffiele.
+      errno = EINVAL;
+      return -1;
+  }
+}
+
 int fstatat(int dirfd, const char* path, struct stat* st, int flags) {
   std::string full;
   if (!ResolveAt(dirfd, path, &full)) {
