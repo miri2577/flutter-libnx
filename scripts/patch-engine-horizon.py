@@ -783,6 +783,32 @@ def patch_dart_vm_sources(src: str, repo: str) -> None:
         )
 
 
+def patch_dart_vm_libs(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "vm",
+                        "BUILD.gn")
+    # Horizon hat kein libdl - dynamisches Nachladen gibt es dort nicht. pthread
+    # und atomic stecken bereits in newlib bzw. libgcc; ein eigenes -lpthread
+    # gaebe es gar nicht zu linken.
+    replace_once(
+        path,
+        "  } else {\n"
+        '    libs = [ "dl" ]\n'
+        "    if (!is_android) {\n"
+        '      libs += [ "pthread" ]\n'
+        "    }",
+        "  } else if (is_horizon) {\n"
+        "    # Kein libdl: Horizon kennt kein dlopen. pthread und atomic sind\n"
+        "    # Teil von newlib bzw. libgcc und brauchen keinen eigenen Eintrag.\n"
+        "    libs = []\n"
+        "  } else {\n"
+        '    libs = [ "dl" ]\n'
+        "    if (!is_android) {\n"
+        '      libs += [ "pthread" ]\n'
+        "    }",
+        "dart vm/BUILD.gn (libs)",
+    )
+
+
 def patch_zlib(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "zlib", "BUILD.gn")
     # zlibs ARMv8-CRC32-Pfad braucht eine OS-spezifische Laufzeiterkennung der
@@ -842,6 +868,7 @@ def main() -> int:
 
     print("==> Dart-VM: Horizon-Implementierungen")
     patch_dart_vm_sources(SRC, repo_root)
+    patch_dart_vm_libs(SRC)
 
     print("==> flutter/third_party/zlib/BUILD.gn")
     patch_zlib(SRC)
