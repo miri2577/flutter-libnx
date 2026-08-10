@@ -733,6 +733,105 @@ def patch_absl_elf_mem_image(src: str) -> None:
     )
 
 
+def patch_absl_low_level_alloc(src: str) -> None:
+    """Macht abseils LowLevelAlloc auf Horizon verfuegbar.
+
+    Ohne mmap setzt abseil ABSL_LOW_LEVEL_ALLOC_MISSING, und damit faellt
+    create_thread_identity.cc vollstaendig weg - die Datei traegt dazu einen
+    eigenen Satz in Zeile 19. Ohne CreateThreadIdentity gibt es kein
+    absl::Mutex, und re2 verlangt genau das.
+
+    Der Ausweg steht schon in der Datei: Neben dem POSIX-Weg gibt es einen
+    zweiten ueber VirtualAlloc/VirtualFree fuer Windows. Ein dritter nach
+    demselben Muster ist also vorgesehene Bauart. Was die Arena wirklich
+    braucht, ist seitenweise ausgerichteter Speicher - nicht eine eigene
+    Abbildung. Das leistet memalign.
+
+    Bewusst wird ABSL_HAVE_MMAP *nicht* gesetzt: Das waere gelogen und wuerde
+    an anderen Stellen zu echten mmap-Aufrufen fuehren. Stattdessen wird nur
+    die eine Folgerung entkraeftet.
+    """
+    base = os.path.join(src, "third_party", "abseil-cpp", "absl", "base",
+                        "internal")
+
+    replace_once(
+        os.path.join(base, "low_level_alloc.h"),
+        "#elif !defined(ABSL_HAVE_MMAP) && !defined(_WIN32)\n"
+        "#define ABSL_LOW_LEVEL_ALLOC_MISSING 1\n",
+        "#elif !defined(ABSL_HAVE_MMAP) && !defined(_WIN32) && "
+        "!defined(__SWITCH__)\n"
+        "#define ABSL_LOW_LEVEL_ALLOC_MISSING 1\n",
+        "abseil-cpp low_level_alloc.h",
+    )
+
+    path = os.path.join(base, "low_level_alloc.cc")
+
+    replace_once(
+        path,
+        "#ifndef _WIN32\n"
+        "#include <pthread.h>\n"
+        "#include <signal.h>\n"
+        "#include <sys/mman.h>\n"
+        "#include <unistd.h>\n",
+        "#ifndef _WIN32\n"
+        "#include <pthread.h>\n"
+        "#include <signal.h>\n"
+        "#if defined(__SWITCH__)\n"
+        "#include <malloc.h>\n"
+        "#else\n"
+        "#include <sys/mman.h>\n"
+        "#endif\n"
+        "#include <unistd.h>\n",
+        "abseil-cpp low_level_alloc.cc (Includes)",
+    )
+
+    replace_once(
+        path,
+        "    int munmap_result;\n"
+        "#ifdef _WIN32\n"
+        "    munmap_result = VirtualFree(region, 0, MEM_RELEASE);\n"
+        "    ABSL_RAW_CHECK(munmap_result != 0,\n"
+        '                   "LowLevelAlloc::DeleteArena: VitualFree failed");\n'
+        "#else\n",
+        "    int munmap_result;\n"
+        "#ifdef _WIN32\n"
+        "    munmap_result = VirtualFree(region, 0, MEM_RELEASE);\n"
+        "    ABSL_RAW_CHECK(munmap_result != 0,\n"
+        '                   "LowLevelAlloc::DeleteArena: VitualFree failed");\n'
+        "#elif defined(__SWITCH__)\n"
+        "    // Gegenstueck zu memalign in Alloc(): Die Region ist genau der\n"
+        "    // Zeiger, den memalign geliefert hat.\n"
+        "    free(region);\n"
+        "    munmap_result = 0;\n"
+        "    (void)munmap_result;\n"
+        "#else\n",
+        "abseil-cpp low_level_alloc.cc (DeleteArena)",
+    )
+
+    replace_once(
+        path,
+        "#ifdef _WIN32\n"
+        "      new_pages = VirtualAlloc(nullptr, new_pages_size,\n"
+        "                               MEM_RESERVE | MEM_COMMIT, "
+        "PAGE_READWRITE);\n"
+        '      ABSL_RAW_CHECK(new_pages != nullptr, "VirtualAlloc failed");\n'
+        "#else\n",
+        "#ifdef _WIN32\n"
+        "      new_pages = VirtualAlloc(nullptr, new_pages_size,\n"
+        "                               MEM_RESERVE | MEM_COMMIT, "
+        "PAGE_READWRITE);\n"
+        '      ABSL_RAW_CHECK(new_pages != nullptr, "VirtualAlloc failed");\n'
+        "#elif defined(__SWITCH__)\n"
+        "      // Die Arena verlangt seitenweise ausgerichteten Speicher, "
+        "keine\n"
+        "      // eigene Abbildung. memalign liefert genau das.\n"
+        "      new_pages = memalign(arena->pagesize, new_pages_size);\n"
+        '      ABSL_RAW_CHECK(new_pages != nullptr, "memalign failed");\n'
+        "#else\n",
+        "abseil-cpp low_level_alloc.cc (Alloc)",
+    )
+
+
 def patch_dart_globals(src: str) -> None:
     """Traegt Horizon in die vier OS-Erkennungen der Dart-VM ein.
 
@@ -2396,6 +2495,7 @@ def main() -> int:
     print("==> third_party/abseil-cpp")
     patch_absl_gettid(SRC)
     patch_absl_elf_mem_image(SRC)
+    patch_absl_low_level_alloc(SRC)
 
     print("==> fml-Plattformquellen für Horizon")
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -75,10 +75,31 @@ Flag wäre jede HTTPS-Verbindung unmöglich – und damit Referenz-App.
 
 **Befund 3 – abseil.** `low_level_alloc.o` wird gebaut, enthält aber **null Symbole**.
 `low_level_alloc.h:39-41` setzt `ABSL_LOW_LEVEL_ALLOC_MISSING`, sobald `ABSL_HAVE_MMAP`
-fehlt – für Horizon zutreffend. Trotzdem verlangen `borrowed_fixup_buffer.cc`
-(Stacktrace) und `create_thread_identity.cc` die Funktionen; dazu fehlen
-`AbslInternalPerThreadSem{Post,Wait}`. Noch offen, welcher Teil der Engine abseils Mutex
-überhaupt erreicht.
+fehlt – für Horizon zutreffend.
+
+Die Folge ist größer, als sie aussieht: `create_thread_identity.cc` ist **vollständig**
+in `#ifndef ABSL_LOW_LEVEL_ALLOC_MISSING` gehüllt und trägt in Zeile 19 den Satz *„This
+file is a no-op if the required LowLevelAlloc support is missing."* Ohne
+`CreateThreadIdentity` gibt es kein `absl::Mutex`. Das ist keine Panne, sondern abseils
+dokumentierte Haltung: Plattformen ohne mmap sollen `absl::Mutex` nicht benutzen.
+
+Verursacher ist **re2** (`re2/dfa.cc`, `re2/regexp.cc`), das
+`//third_party/abseil-cpp/absl/synchronization` als Abhängigkeit führt.
+
+**Konsequenz:** Der Ausweg steht schon in der Datei. Neben dem POSIX-Weg gibt es einen
+zweiten über `VirtualAlloc`/`VirtualFree` für Windows – ein dritter nach demselben Muster
+ist also vorgesehene Bauart, kein Fremdkörper. Was die Arena wirklich braucht, ist
+seitenweise ausgerichteter Speicher, nicht eine eigene Abbildung; das leistet `memalign`.
+Dieselbe Entscheidung wie bei Darts `virtual_memory_horizon.cc` und Skias `sk_fdmmap`.
+
+Bewusst wird `ABSL_HAVE_MMAP` **nicht** gesetzt: Das wäre gelogen und würde an anderen
+Stellen zu echten mmap-Aufrufen führen. Entkräftet wird nur die eine Folgerung, dass ohne
+mmap auch kein LowLevelAlloc möglich sei.
+
+Nicht gesetzt wird ebenfalls `ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING` – sonst
+verschwände `SigSafeArena()`, das `borrowed_fixup_buffer.cc` braucht. Die Frage der
+Signalsicherheit ist auf Horizon ohnehin gegenstandslos, weil keine Signale zugestellt
+werden. Dieselbe Überlegung wie bei `pthread_sigmask`.
 
 ---
 
