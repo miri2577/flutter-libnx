@@ -926,6 +926,93 @@ def patch_native_assets(src: str) -> None:
     )
 
 
+# dart:io – Dateien, die auf Horizon dasselbe tun wie unter Linux.
+#
+# Statt Kopien anzulegen wird der vorhandene Waechter erweitert. Das haelt die
+# Abweichung vom Upstream klein und macht sichtbar, wo Horizon sich wirklich
+# unterscheidet: naemlich nur dort, wo eine eigene Datei entsteht.
+#
+# Welche Datei hier hineingehoert, entscheidet der Compiler. Der Ansatz ist
+# bewusst empirisch: Waechter erweitern, bauen, und was scheitert, bekommt eine
+# eigene Fassung.
+DART_BIN_POSIX_REUSE = (
+    "thread_linux.cc",
+    "utils_linux.cc",
+    "fdutils_linux.cc",
+    "socket_base_linux.cc",
+    "socket_linux.cc",
+    "sync_socket_linux.cc",
+    "stdio_linux.cc",
+    "file_linux.cc",
+    "directory_linux.cc",
+    "platform_linux.cc",
+)
+
+
+def patch_dart_bin_guards(src: str) -> None:
+    base = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin")
+    old = "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)"
+    new = ("#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID) ||     \\\n"
+           "    defined(DART_HOST_OS_HORIZON)")
+
+    # thread_linux.cc hat einen mehrzeiligen Waechter mit zusaetzlicher
+    # Bedingung und braucht deshalb eine eigene Behandlung.
+    old_multiline = ("#if (defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)) &&          \\\n")
+    new_multiline = ("#if (defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID) ||           \\\n"
+                     "     defined(DART_HOST_OS_HORIZON)) &&                                         \\\n")
+
+    for name in DART_BIN_POSIX_REUSE:
+        path = os.path.join(base, name)
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        if "DART_HOST_OS_HORIZON" in text:
+            print(f"    schon erweitert: bin/{name}")
+            continue
+        if old_multiline in text:
+            text = text.replace(old_multiline, new_multiline, 1)
+        elif old in text:
+            text = text.replace(old, new, 1)
+        else:
+            print(f"    WAECHTER NICHT ERKANNT: bin/{name}", file=sys.stderr)
+            continue
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        print(f"    erweitert: bin/{name}")
+
+
+def patch_dart_bin_headers(src: str) -> None:
+    base = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin")
+
+    # socket_base_linux.h umfasst 17 Zeilen reiner Systemincludes und passt
+    # unveraendert.
+    replace_once(
+        os.path.join(base, "socket_base.h"),
+        '#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)\n'
+        '#include "bin/socket_base_linux.h"\n',
+        '#elif defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID) ||      \\\n'
+        '    defined(DART_HOST_OS_HORIZON)\n'
+        '#include "bin/socket_base_linux.h"\n',
+        "dart bin/socket_base.h",
+    )
+
+    # eventhandler_linux.h setzt epoll voraus, das Horizon nicht hat - hier
+    # fuehrt kein Weg an einer eigenen Fassung vorbei.
+    replace_once(
+        os.path.join(base, "eventhandler.h"),
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "bin/eventhandler_win.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        '#elif defined(DART_HOST_OS_WINDOWS)\n'
+        '#include "bin/eventhandler_win.h"\n'
+        "#elif defined(DART_HOST_OS_HORIZON)\n"
+        '#include "bin/eventhandler_horizon.h"\n'
+        "#else\n"
+        "#error Unknown target os.",
+        "dart bin/eventhandler.h",
+    )
+
+
 def patch_skia_osfile(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "skia", "src", "ports",
                         "SkOSFile_posix.cpp")
@@ -1107,6 +1194,9 @@ def main() -> int:
     print("==> Dart-VM: Horizon-Implementierungen")
     patch_dart_vm_sources(SRC, repo_root)
     patch_dart_vm_libs(SRC)
+
+    print("==> dart:io – Wächter für POSIX-gleiche Dateien")
+    patch_dart_bin_guards(SRC)
 
     print("==> flutter/skia/BUILD.gn")
     patch_skia_config(SRC)

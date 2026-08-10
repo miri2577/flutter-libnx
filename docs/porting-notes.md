@@ -170,6 +170,49 @@ frühere Annahme: Der signalbasierte Profiler entfällt im Product-Modus tatsäc
 Die übrigen 562 offenen Symbole stammen aus anderen Zielen (`dart::Api::`,
 `dart::BaseTextBuffer::` und Verwandte) und lösen sich beim Zusammenlinken auf.
 
+### dart:io – Umfang vermessen und Strategie festgelegt
+
+Der Build erreichte `dart/runtime/bin`, die native Seite von `dart:io`: **16
+plattformspezifische Dateien, 4671 Zeilen**.
+
+Statt sie zu kopieren wurde zuerst geprüft, welche überhaupt Linux-*spezifische* APIs
+benutzen. Ergebnis: `thread_linux.cc`, `utils_linux.cc` und `socket_base_linux.cc`
+benutzen **gar keine** – sie sind reiner POSIX-Code unter einem Linux-Wächter.
+
+Deshalb der Ansatz: **Wächter erweitern statt kopieren.** Bei zehn Dateien wurde
+`DART_HOST_OS_HORIZON` in die vorhandene Bedingung aufgenommen. Das hält die Abweichung
+vom Upstream klein und macht sichtbar, wo Horizon sich wirklich unterscheidet – nämlich
+nur dort, wo eine eigene Datei entsteht.
+
+Der Ansatz ist bewusst empirisch: Welche Datei hineingehört, entscheidet der Compiler.
+Das ist erheblich schneller, als 4671 Zeilen vorab zu bewerten.
+
+**Ergebnis des ersten Durchlaufs:** Die zehn `.cc`-Dateien übersetzen. Es scheitern nur
+die Header, die ihre plattformspezifischen Gegenstücke auswählen – `socket_base.h`
+(gelöst, `socket_base_linux.h` umfasst 17 Zeilen reiner Systemincludes) und
+`eventhandler.h`.
+
+### Der Eventhandler und sein Weckmechanismus
+
+`eventhandler_linux.cc` (433 Zeilen) setzt **epoll** und **timerfd** voraus, die Horizon
+nicht hat. Eine `poll`-basierte Fassung ist der Weg – aber sie hängt an einer Frage, die
+vor dem Schreiben zu klären war: Womit weckt ein anderer Thread den wartenden `poll`?
+Linux benutzt dafür eine Pipe (`interrupt_fds_[2]`).
+
+Geprüft, was libnx tatsächlich definiert (`nm` über `libnx.a`):
+
+| Funktion | vorhanden |
+|---|---|
+| `poll` | ja |
+| `select` | ja |
+| `socketpair` | **ja** |
+| `pipe` | **nein** |
+
+**Entscheidung:** `socketpair()` statt Pipe. Ein verbundenes Socket-Paar erfüllt denselben
+Zweck – ein Deskriptor, auf den `poll` warten kann und den ein anderer Thread beschreibt –
+und ist auf Horizon verfügbar. Der Timer läuft nicht über `timerfd`, sondern über das
+Zeitlimit von `poll` selbst, berechnet aus der vorhandenen `TimeoutQueue`.
+
 ### Die Dart-Portierung steht
 
 Fünf Dateien, 44 Funktionen, alle Plattformgruppen auf null offene Symbole:
