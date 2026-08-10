@@ -24,13 +24,18 @@ $icu       = "$engine\windows-x64\icudtl.dat"
 
 $app       = "$root\examples\ui_app"
 $generated = "$app\generated"
-$assets    = "$generated\flutter_assets"
+# Die Assets gehen ins RomFS der NRO, nicht auf die SD-Karte. Eine Flutter-App
+# soll als eine einzige Datei auslieferbar sein, nicht als NRO plus einen
+# Verzeichnisbaum, den jemand von Hand an die richtige Stelle kopiert. Nebenbei
+# koennen Assets so nicht mehr zur Programmversion unpassend werden.
+$romfs     = "$app\romfs"
+$assets    = "$romfs\flutter_assets"
 
 foreach ($p in @($sdk, $genSnap, $platform, $icu)) {
   if (-not (Test-Path $p)) { throw "Nicht gefunden: $p" }
 }
 
-New-Item -ItemType Directory -Force -Path $generated, $assets | Out-Null
+New-Item -ItemType Directory -Force -Path $generated, $romfs, $assets | Out-Null
 $dill = "$generated\app.dill"
 
 Write-Host '==> Kernel erzeugen (dart:ui aus der Flutter-Plattform-Dill)'
@@ -55,7 +60,7 @@ Write-Host "    $lines Zeilen Assembly"
 Write-Host '==> flutter_assets anlegen'
 '{"": []}' | Set-Content -Encoding UTF8 "$assets\AssetManifest.json"
 '[]'       | Set-Content -Encoding UTF8 "$assets\FontManifest.json"
-Copy-Item $icu "$generated\icudtl.dat" -Force
+Copy-Item $icu "$romfs\icudtl.dat" -Force
 Write-Host "    AssetManifest.json, FontManifest.json, icudtl.dat"
 
 Write-Host "`nFertig. Artefakte in $generated"
