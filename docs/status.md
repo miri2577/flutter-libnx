@@ -147,3 +147,29 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [ ] Touch
 - [ ] Controller
 - [ ] Platform Channels
+
+## Stand der Fehlersuche (2026-08-10)
+
+Der Absturz sitzt in `FlutterEngineRunInitialized`. Zwei Läufe mit
+Instrumentierung haben ihn eingegrenzt:
+
+- **Die Dart-VM gibt keine eigene Meldung aus.** `OS::Print`/`OS::PrintErr`
+  gehen jetzt über eine schwach gebundene Funktion an die TCP-Senke; es kommt
+  nichts. Die VM stirbt also, bevor sie etwas zu melden hat – ein harter
+  Speicherzugriffsfehler, kein kontrollierter Abbruch. Der Fatal-Screen der
+  Konsole bestätigt das (`2168-0002`, Data Abort).
+- **`VirtualMemory::AllocateAligned` wird nie erreicht.** Auch dort meldet
+  jeder Aufruf Name, Größe, Ausrichtung und Flags – keine einzige Zeile
+  kommt an. Der Absturz liegt damit *vor* der ersten Heap-Anforderung.
+
+Kein Deadlock: Die Konsole schließt die Verbindung, statt sie offen zu halten.
+
+**Nächster Verdächtiger:** `GetCurrentStackBounds` in `os_thread_horizon.cc`
+steht auf `false` (dokumentierte Lücke). Die VM ermittelt beim Isolate-Start
+die Stack-Grenzen zur Überlauferkennung; ohne sie arbeitet sie je nach Pfad mit
+Null-Grenzen weiter, was genau dieses Fehlerbild ergibt – Absturz ohne Meldung,
+noch vor jeder Allokation.
+
+Naheliegender erster Versuch: echte Grenzen liefern statt `false`, über
+`pthread_getattr_np` oder über die Stack-Angaben, die `os_thread_horizon.cc`
+beim Anlegen des Threads ohnehin kennt.

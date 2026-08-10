@@ -37,6 +37,9 @@
 
 #include "platform/assert.h"
 #include "platform/utils.h"
+#include <stdarg.h>
+#include <stdio.h>
+
 #include "vm/memory_region.h"
 
 #if defined(DART_COMPRESSED_POINTERS)
@@ -44,6 +47,24 @@
 diese Implementierung nicht leisten kann. Mit dart_use_compressed_pointers=false \
 bauen oder Reserve/Commit ueber libnx virtmem nachruesten.
 #endif
+
+// DEBUG-INSTRUMENTIERUNG (flutter-libnx): siehe os_horizon.cc. Der Embedder
+// stellt diese Funktion bereit; fehlt sie, ist der Zeiger null.
+extern "C" __attribute__((weak)) void flutter_libnx_vm_log(const char* text);
+
+namespace {
+void VmLog(const char* format, ...) {
+  if (flutter_libnx_vm_log == nullptr) {
+    return;
+  }
+  char buffer[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  flutter_libnx_vm_log(buffer);
+}
+}  // namespace
 
 namespace dart {
 
@@ -73,13 +94,31 @@ VirtualMemory* VirtualMemory::AllocateAligned(intptr_t size,
   // Ausführbaren Speicher gibt es hier nicht. Im AOT-Product-Modus fordert die
   // VM ihn nicht an; sollte es doch geschehen, ist das ein Fehler, den wir
   // sehen wollen, statt ihn zu verschleiern.
+  // Diese beiden Zusicherungen sind im Release-Build wirkungslos - und genau
+  // dort laufen wir. Fordert die VM ausfuehrbaren Speicher an, liefert
+  // memalign stillschweigend nicht ausfuehrbaren; der spaetere Sprung dorthin
+  // ergibt einen Data Abort weit entfernt von der Ursache. Deshalb hier eine
+  // Meldung, die auch im Release ankommt.
   ASSERT(!is_executable);
   ASSERT(!is_compressed);
 
+  VmLog("VirtualMemory::AllocateAligned name=%s size=%ld align=%ld exec=%d "
+        "compressed=%d",
+        name != nullptr ? name : "?", static_cast<long>(size),
+        static_cast<long>(alignment), is_executable ? 1 : 0,
+        is_compressed ? 1 : 0);
+
+  if (is_executable) {
+    VmLog("  ACHTUNG: ausfuehrbarer Speicher angefordert - Horizon kann das "
+          "nicht liefern");
+  }
+
   void* address = memalign(alignment, size);
   if (address == nullptr) {
+    VmLog("  memalign fehlgeschlagen");
     return nullptr;
   }
+  VmLog("  -> %p", address);
 
   MemoryRegion region(address, size);
   return new VirtualMemory(region, region);
