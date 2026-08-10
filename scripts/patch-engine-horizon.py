@@ -535,7 +535,8 @@ def patch_fml_platform_sources(src: str, repo: str) -> None:
     source_dir = os.path.join(repo, "patches", "flutter-engine", "files",
                               "fml", "platform", "horizon")
     for name in ("mapping_horizon.cc", "native_library_horizon.cc",
-                 "paths_horizon.cc"):
+                 "paths_horizon.cc", "message_loop_horizon.h",
+                 "message_loop_horizon.cc"):
         shutil.copyfile(os.path.join(source_dir, name),
                         os.path.join(target_dir, name))
         print(f"    kopiert: fml/platform/horizon/{name}")
@@ -574,6 +575,45 @@ def patch_fml_platform_sources(src: str, repo: str) -> None:
         '        "platform/horizon/paths_horizon.cc",\n'
         "      ]\n",
         "flutter/fml/BUILD.gn (paths)",
+    )
+
+    replace_once(
+        os.path.join(src, "flutter", "fml", "BUILD.gn"),
+        '        "platform/horizon/paths_horizon.cc",\n'
+        "      ]\n",
+        '        "platform/horizon/paths_horizon.cc",\n'
+        '        "platform/horizon/message_loop_horizon.cc",\n'
+        '        "platform/horizon/message_loop_horizon.h",\n'
+        "      ]\n",
+        "flutter/fml/BUILD.gn (message loop)",
+    )
+
+    # Ohne diesen Zweig faellt Create() in das #else und liefert nullptr. Das
+    # linkt anstandslos und stuerzt erst zur Laufzeit ab, sobald der erste
+    # Thread seine Schleife einrichtet - also sofort beim Start der Engine.
+    replace_once(
+        os.path.join(src, "flutter", "fml", "message_loop_impl.cc"),
+        "#elif FML_OS_LINUX\n"
+        "  return fml::MakeRefCounted<MessageLoopLinux>();\n",
+        "#elif FML_OS_HORIZON\n"
+        "  return fml::MakeRefCounted<MessageLoopHorizon>();\n"
+        "#elif FML_OS_LINUX\n"
+        "  return fml::MakeRefCounted<MessageLoopLinux>();\n",
+        "flutter/fml/message_loop_impl.cc (Create)",
+    )
+
+    # Der Include gehoert in die vorhandene Kette, nicht daneben: Auf jeder
+    # anderen Plattform gaebe es den Header sonst zwar, aber MessageLoopHorizon
+    # wuerde gegen fehlende Symbole uebersetzt.
+    replace_once(
+        os.path.join(src, "flutter", "fml", "message_loop_impl.cc"),
+        "#elif FML_OS_LINUX\n"
+        '#include "flutter/fml/platform/linux/message_loop_linux.h"\n',
+        "#elif FML_OS_HORIZON\n"
+        '#include "flutter/fml/platform/horizon/message_loop_horizon.h"\n'
+        "#elif FML_OS_LINUX\n"
+        '#include "flutter/fml/platform/linux/message_loop_linux.h"\n',
+        "flutter/fml/message_loop_impl.cc (Include)",
     )
 
     # paths_posix.cc deckt nur die reinen Zeichenkettenfunktionen ab.

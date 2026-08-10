@@ -109,6 +109,12 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       Dateien und Verzeichnisse strikt trennt. Eigener Handle-Bereich plus
       `--wrap` für `dup`/`close`/`fstat` in
       `embedder/src/platform/posix_compat_horizon.cpp`
+- [x] **Nachrichtenschleife für Horizon** – `MessageLoopImpl::Create()` fiel für
+      Horizon in den `#else`-Zweig und lieferte `nullptr`; das linkt sauber und
+      stürzt erst zur Laufzeit ab. Ersatz auf Basis von `std::condition_variable`
+      statt epoll/timerfd, im Programm nachgewiesen.
+- [x] **systematische Suche nach stillen Plattformweichen**
+      (`scripts/find-silent-fallbacks.py`) – ein echter Treffer, zwei Fehlalarme
 - [ ] auf Hardware gestartet
 
 ## Danach

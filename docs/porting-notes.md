@@ -6,6 +6,46 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-10 – Eine Plattformweiche, die still nichts liefert
+
+**Befund:** `fml/message_loop_impl.cc:29-43` wählt die Nachrichtenschleife über eine
+`#if`-Kette. Für Horizon greift keiner der Zweige, also der `#else`: **`return nullptr`**.
+Das übersetzt und linkt anstandslos und fällt erst zur Laufzeit auf – und zwar sofort,
+denn die Shell richtet für UI-, Raster- und IO-Thread je eine Schleife ein.
+
+Die Linux-Fassung (`platform/linux/message_loop_linux.cc`) baut auf `epoll` und
+`timerfd` auf; beides fehlt auf Horizon. Im gelinkten Programm war keines der Symbole
+`timerfd_create`, `epoll_create1`, `epoll_wait`, `eventfd` auch nur referenziert – ein
+sauberer Beleg dafür, dass tatsächlich *keine* Schleife gebaut wurde.
+
+**Konsequenz:** `platform/horizon/message_loop_horizon.{h,cc}` auf Basis von
+`std::condition_variable`. Die Schnittstelle verlangt nur dreierlei – `Run`, `Terminate`,
+`WakeUp(TimePoint)` –, und eine Bedingungsvariable leistet genau das: bis zu einem
+Zeitpunkt warten und vorzeitig geweckt werden können. Der Umweg über Dateideskriptoren,
+den epoll+timerfd nehmen, ist auf Linux eine Notwendigkeit der Architektur, kein
+Selbstzweck.
+
+Gewartet wird bewusst über eine **Dauer** (`wait_for`) statt über einen absoluten
+Zeitpunkt: `fml::TimePoint` und `std::chrono::steady_clock` müssen nicht dieselbe Uhr
+sein. Die Restzeit wird in jeder Runde neu berechnet, deshalb sind vorzeitige Aufwacher
+unschädlich.
+
+**Folgerung darüber hinaus:** Solche Stellen sind gefährlicher als jeder Compilerfehler,
+weil sie nichts melden. `scripts/find-silent-fallbacks.py` sucht sie deshalb
+systematisch – Präprozessorketten über mindestens zwei Plattformmakros, deren `#else`
+einen Leerwert liefert. Der Lauf über `fml`, `shell`, `runtime`, `common`, `assets` und
+`lib/ui` ergab **drei** Treffer: diesen einen echten, und zwei Fehlalarme
+(`synchronization/semaphore.cc` – der `#else` ist dort der reguläre POSIX-Zweig;
+`lib/ui/painting/image_generator_registry.cc` – eine zusätzliche macOS-Factory neben
+der von Skia).
+
+**Nebenbefund zu Semaphoren:** `sem_init`, `sem_wait`, `sem_trywait`, `sem_post`,
+`sem_timedwait` sind in `libsysbase.a` **echt implementiert**, keine ENOSYS-Stubs. Das
+Disassemblat von `sem_init` im gelinkten Programm prüft die Argumente, lehnt
+`pshared != 0` mit `EINVAL` ab und legt den Zähler ab. fml übergibt `pshared = 0`.
+
+---
+
 ## 2026-08-10 – Verzeichnis-Deskriptoren gibt es auf Horizon nicht
 
 **Befund:** `fml/platform/posix/file_posix.cc` ist durchgängig fd-relativ gebaut: Ein
