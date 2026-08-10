@@ -6,6 +6,80 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-10 – Verzeichnis-Deskriptoren gibt es auf Horizon nicht
+
+**Befund:** `fml/platform/posix/file_posix.cc` ist durchgängig fd-relativ gebaut: Ein
+Verzeichnis wird einmal geöffnet, alles Weitere läuft über `openat` (Z. 93, 119),
+`mkdirat` (Z. 112), `unlinkat` (Z. 167, 175), `faccessat` (Z. 187), `renameat` (Z. 231)
+und `fdopendir` (Z. 242) relativ zu diesem Deskriptor.
+
+Horizon kennt dieses Modell nicht. Die devoptab-Schnittstelle
+(`devkitA64/aarch64-none-elf/include/sys/iosupport.h`) trennt beide Welten strikt:
+`open_r` (Z. 39) liefert einen Dateideskriptor, `diropen_r` (Z. 54) einen `DIR_ITER*`.
+Zwischen beiden gibt es keine Brücke – `struct DIR` (`dirent.h:35-39`) enthält einen
+`DIR_ITER*`, keinen Deskriptor. Ein Verzeichnis-fd ist hier nicht unimplementiert,
+sondern im Datenmodell nicht vorgesehen.
+
+Passend dazu: newlib **deklariert** alle *at-Funktionen in den Headern, **definiert**
+aber keine einzige. Geprüft über `nm --defined-only` gegen `libc.a`, `libsysbase.a`,
+`libg.a` und `libnx.a` (`scripts/probe-at-funcs.sh`): `mkdirat`, `unlinkat`, `openat`,
+`renameat`, `faccessat`, `fdopendir`, `dirfd` fehlen alle; die pfadbasierten
+Entsprechungen `mkdir`, `unlink`, `rmdir`, `rename`, `access`, `opendir`, `readdir`
+sind vorhanden.
+
+**Konsequenz:** `embedder/src/platform/posix_compat_horizon.cpp` vergibt Verzeichnissen
+Handles aus einem eigenen Zahlenbereich ab `0x40000000` und merkt sich zu jedem den
+vollständigen Pfad. Die *at-Funktionen setzen daraus einen Pfad zusammen und rufen die
+pfadbasierte Variante auf.
+
+Weil `dup`, `close` und `fstat` ebenfalls auf solche Handles treffen (`file_posix.cc`
+Z. 236, Z. 133, sowie jeder `UniqueFD`-Destruktor), laufen sie über `-Wl,--wrap=…`.
+Für echte Deskriptoren reichen die Wrapper unverändert an libc weiter.
+
+Zwei Dinge sind dabei bewusst *nicht* nachgebaut:
+
+- **`dirfd()`** gibt `ENOTSUP` zurück. Aus einem `DIR_ITER` lässt sich kein Deskriptor
+  gewinnen; ein erfundener Wert fiele erst später und an anderer Stelle auf.
+- **Die Sicherheitsgarantie fd-relativer Zugriffe** – dass das Basisverzeichnis zwischen
+  Öffnen und Benutzen nicht ausgetauscht werden kann – geht verloren. Auf einer Konsole
+  ohne Mehrbenutzerbetrieb ist das hinnehmbar, aber es ist ein Verhaltensunterschied.
+
+Die Schicht liegt im Embedder, nicht im Engine-Baum: Sie füllt eine Lücke der Plattform
+und ändert kein Verhalten der Engine. Damit sinkt zugleich die Patchfläche – die frühere
+`dart/bin/posix_at_horizon.cc`, die nur `AT_FDCWD` beherrschte, ist entfallen.
+
+---
+
+## 2026-08-10 – Idempotenz bricht, wenn sich der Ersatztext ändert
+
+**Befund:** `replace_once` prüft zuerst, ob `new` schon im Text steht. Wird `new`
+nachträglich geändert – hier: `posix_at_horizon.cc` aus der Einfügung entfernt –, greift
+diese Prüfung nicht mehr, während der Anker (`"stdio_linux.cc",`) die erste Ersetzung
+überlebt hat. Der Patch lief ein zweites Mal und trug `stdio_horizon.cc` doppelt ein,
+was GN als doppelte Quelldatei ablehnt.
+
+**Konsequenz:** Bei Einfügungen, deren Anker erhalten bleibt, reicht die generische
+Prüfung nicht. Dort geht der Prüfung auf `new` eine eigene Prüfung auf den *Eintrag
+selbst* voraus. Allgemeiner: Ein geänderter Ersatztext in einem idempotenten Patchskript
+ist immer verdächtig, weil er die Wiedererkennung des bereits erledigten Zustands
+zerstört.
+
+---
+
+## 2026-08-10 – `GetCachesDirectory` bleibt leer, und das ist richtig so
+
+**Befund:** Einziger Aufrufer im Softwarepfad ist der `PersistentCache`
+(`common/graphics/persistent_cache.cc:144`), der dort vorkompilierte Shader ablegt. Die
+übrigen Aufrufer sind sämtlich Vulkan-Backends. Linux (`paths_linux.cc:22`) und QNX
+(`paths_qnx.cc:15`) geben beide `{}` zurück.
+
+**Konsequenz:** `paths_horizon.cc` tut dasselbe. Ein Shader-Cache hätte im
+Software-Renderer nichts zu speichern und würde nur Dateien auf der SD-Karte anlegen.
+`GetExecutablePath()` gibt `{false, ""}` zurück – Horizon führt kein `/proc`, und der
+Pfad der laufenden NRO landet in `argv`, also außerhalb der Reichweite von fml.
+
+---
+
 ## 2026-08-09 – Toolchain über Container statt lokaler Installation
 
 **Befund:** Die lokale devkitPro-Installation scheiterte an einer sudo-Passwortabfrage, die

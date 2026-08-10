@@ -53,7 +53,16 @@ CFLAGS	+=	-I$(ENGINE_INC)
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++20
 
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+#---------------------------------------------------------------------------------
+# Verzeichnis-Deskriptoren gibt es auf Horizon nicht (siehe
+# embedder/src/platform/posix_compat_horizon.cpp). Damit die Handles, die
+# diese Schicht vergibt, auch bei dup/close/fstat erkannt werden, laufen die
+# drei Aufrufe ueber Wrapper. Fuer echte Deskriptoren reichen sie unveraendert
+# an libc weiter.
+#---------------------------------------------------------------------------------
+WRAPS	:=	-Wl,--wrap=close -Wl,--wrap=dup -Wl,--wrap=fstat
+
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(WRAPS) -Wl,-Map,$(notdir $*.map)
 
 LIBS	:= $(ENGINE_LIB) -lnx
 

@@ -24,6 +24,33 @@ namespace {
 constexpr const char* kHostIp = "192.168.0.153";
 constexpr uint16_t kHostPort = 28800;
 
+// Wird an die Engine gereicht. Sie ruft ihn nicht auf, solange kein Frame
+// entsteht – vorhanden sein muss er trotzdem.
+bool SoftwarePresent(void* user_data,
+                     const void* allocation,
+                     size_t row_bytes,
+                     size_t height) {
+  LOG_INFO("SoftwarePresent: %zu Bytes/Zeile, %zu Zeilen", row_bytes, height);
+  return true;
+}
+
+// Engine-eigene Meldungen sichtbar machen. Auf dieser Plattform ist die
+// Logsenke der einzige Diagnosekanal, der bleibt.
+void EngineLog(const char* tag, const char* message, void* user_data) {
+  LOG_INFO("[engine:%s] %s", tag != nullptr ? tag : "?",
+           message != nullptr ? message : "");
+}
+
+const char* ResultName(FlutterEngineResult result) {
+  switch (result) {
+    case kSuccess:               return "kSuccess";
+    case kInvalidLibraryVersion: return "kInvalidLibraryVersion";
+    case kInvalidArguments:      return "kInvalidArguments";
+    case kInternalInconsistency: return "kInternalInconsistency";
+  }
+  return "unbekannt";
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -66,6 +93,47 @@ int main(int argc, char* argv[]) {
               static_cast<unsigned long long>(t0));
   LOG_INFO("FlutterEngineGetCurrentTime = %llu",
            static_cast<unsigned long long>(t0));
+
+  // Der eigentliche Test: die vollständige Startsequenz anstoßen.
+  //
+  // Ohne AOT-Snapshot und ohne flutter_assets wird das scheitern – und genau
+  // das ist die Absicht. Der Rückgabewert sagt, wie weit die Engine kommt,
+  // und das Linken dieses Aufrufs zieht die gesamte Initialisierung ins
+  // Programm. Vorher war nur nachgewiesen, dass einzelne Funktionen linkbar
+  // sind, nicht die Startsequenz als Ganzes.
+  std::printf("\n  FlutterEngineInitialize ...\n");
+  consoleUpdate(nullptr);
+  LOG_INFO("FlutterEngineInitialize wird aufgerufen");
+
+  FlutterRendererConfig renderer = {};
+  renderer.type = kSoftware;
+  renderer.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
+  renderer.software.surface_present_callback = SoftwarePresent;
+
+  FlutterProjectArgs project = {};
+  project.struct_size = sizeof(FlutterProjectArgs);
+  project.assets_path = "sdmc:/switch/flutter-libnx/flutter_assets";
+  project.icu_data_path = "sdmc:/switch/flutter-libnx/icudtl.dat";
+  project.log_message_callback = EngineLog;
+
+  FLUTTER_API_SYMBOL(FlutterEngine) engine = nullptr;
+  const FlutterEngineResult result =
+      FlutterEngineInitialize(FLUTTER_ENGINE_VERSION, &renderer, &project,
+                              nullptr, &engine);
+
+  std::printf("  Ergebnis: %d (%s)\n", static_cast<int>(result),
+              ResultName(result));
+  LOG_INFO("FlutterEngineInitialize = %d (%s)", static_cast<int>(result),
+           ResultName(result));
+
+  if (result == kSuccess) {
+    std::printf("  Engine-Handle: %p\n", static_cast<void*>(engine));
+    FlutterEngineShutdown(engine);
+    std::printf("  wieder heruntergefahren.\n");
+    LOG_INFO("Engine initialisiert und wieder heruntergefahren");
+  } else {
+    std::printf("  (ohne Snapshot und Assets erwartet)\n");
+  }
 
   std::printf("\n  Plus zum Beenden.\n");
   consoleUpdate(nullptr);

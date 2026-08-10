@@ -534,7 +534,8 @@ def patch_fml_platform_sources(src: str, repo: str) -> None:
     os.makedirs(target_dir, exist_ok=True)
     source_dir = os.path.join(repo, "patches", "flutter-engine", "files",
                               "fml", "platform", "horizon")
-    for name in ("mapping_horizon.cc", "native_library_horizon.cc"):
+    for name in ("mapping_horizon.cc", "native_library_horizon.cc",
+                 "paths_horizon.cc"):
         shutil.copyfile(os.path.join(source_dir, name),
                         os.path.join(target_dir, name))
         print(f"    kopiert: fml/platform/horizon/{name}")
@@ -561,6 +562,24 @@ def patch_fml_platform_sources(src: str, repo: str) -> None:
         "  }",
         "flutter/fml/BUILD.gn",
     )
+
+    # Eigener Schritt statt Teil des Blocks darueber: Der grosse Patch war zum
+    # Zeitpunkt dieser Aenderung in vorhandenen Baeumen schon angewendet. So
+    # greift es sowohl im frischen als auch im bereits gepatchten Baum.
+    replace_once(
+        os.path.join(src, "flutter", "fml", "BUILD.gn"),
+        '        "platform/horizon/native_library_horizon.cc",\n'
+        "      ]\n",
+        '        "platform/horizon/native_library_horizon.cc",\n'
+        '        "platform/horizon/paths_horizon.cc",\n'
+        "      ]\n",
+        "flutter/fml/BUILD.gn (paths)",
+    )
+
+    # paths_posix.cc deckt nur die reinen Zeichenkettenfunktionen ab.
+    # GetExecutablePath und GetCachesDirectory liegen bei jeder Plattform in
+    # ihrer eigenen Datei; unter Linux ist das paths_linux.cc, die hier nicht
+    # mitkompiliert wird. Ohne paths_horizon.cc fehlen beide beim Linken.
 
     # file_posix.cc bindet sys/mman.h ein, benutzt daraus aber nichts. Der
     # Include ist schlicht tot - Entfernen ist auch fuer andere Plattformen
@@ -1019,9 +1038,12 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
     base = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin")
     files = os.path.join(repo, "patches", "flutter-engine", "files", "dart", "bin")
 
+    # posix_at_horizon.cc ist bewusst nicht mehr dabei: Die *at-Funktionen
+    # liegen jetzt in embedder/src/platform/posix_compat_horizon.cc. Dort
+    # koennen sie echte Verzeichnis-Handles aufloesen, waehrend die Fassung
+    # im Dart-Baum nur AT_FDCWD beherrschte - fuer fml zu wenig.
     for name in ("eventhandler_horizon.h", "eventhandler_horizon.cc",
-                 "socket_base_horizon.h", "stdio_horizon.cc",
-                 "posix_at_horizon.cc"):
+                 "socket_base_horizon.h", "stdio_horizon.cc"):
         shutil.copyfile(os.path.join(files, name), os.path.join(base, name))
         print(f"    kopiert: dart/runtime/bin/{name}")
 
@@ -1033,12 +1055,23 @@ def patch_dart_bin_headers(src: str, repo: str) -> None:
         "dart bin/io_impl_sources.gni",
     )
 
-    replace_once(
-        os.path.join(base, "io_impl_sources.gni"),
-        '  "stdio_linux.cc",\n',
-        '  "stdio_horizon.cc",\n  "posix_at_horizon.cc",\n  "stdio_linux.cc",\n',
-        "dart bin/io_impl_sources.gni (stdio)",
-    )
+    # Der Anker ueberlebt die Ersetzung, deshalb haengt die Idempotenz hier
+    # allein daran, dass replace_once zuerst auf `new` prueft. Aendert sich
+    # `new` spaeter, greift diese Pruefung nicht mehr und der Eintrag kaeme
+    # ein zweites Mal hinein - was GN als doppelte Quelldatei ablehnt.
+    # Deshalb vorab eine eigene Pruefung auf den Eintrag selbst.
+    gni_path = os.path.join(base, "io_impl_sources.gni")
+    with open(gni_path, encoding="utf-8") as handle:
+        gni_text = handle.read()
+    if '"stdio_horizon.cc",' in gni_text:
+        print("    schon gepatcht: dart bin/io_impl_sources.gni (stdio)")
+    else:
+        replace_once(
+            gni_path,
+            '  "stdio_linux.cc",\n',
+            '  "stdio_horizon.cc",\n  "stdio_linux.cc",\n',
+            "dart bin/io_impl_sources.gni (stdio)",
+        )
 
 
     # socket_base_linux.h bindet <sys/un.h> ein, das libnx nicht hat - deshalb

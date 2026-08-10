@@ -102,9 +102,14 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       gültiges `NRO0`-Magic, AArch64. Aufrufe in die Engine
       (`FlutterEngineGetCurrentTime`, `FlutterEngineRunsAOTCompiledDartCode`)
       sind im Programm enthalten.
+- [x] **die vollständige Startsequenz linkt** – `FlutterEngineInitialize` wird
+      aufgerufen und ist in der ELF enthalten; die NRO wächst dadurch von 3,0 auf
+      7,4 MB. Kein einziges offenes Symbol mehr.
+- [x] **Verzeichnis-Deskriptoren nachgebaut** – Horizon kennt keine, weil devoptab
+      Dateien und Verzeichnisse strikt trennt. Eigener Handle-Bereich plus
+      `--wrap` für `dup`/`close`/`fstat` in
+      `embedder/src/platform/posix_compat_horizon.cpp`
 - [ ] auf Hardware gestartet
-- [ ] Skia (Software) kompiliert
-- [ ] Engine linkt
 
 ## Danach
 
