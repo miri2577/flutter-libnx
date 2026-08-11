@@ -38,6 +38,9 @@ extern "C" void flutter_libnx_random_cleanup(void);
 extern "C" bool flutter_libnx_handle_plugin_message(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const FlutterPlatformMessage* message);
+// DIAGNOSE: sqlite3-Rauchprobe auf C-Ebene (sqlite3_probe_horizon.cpp),
+// solange SQLITE_IOERR_CORRUPTFS aus dem Dart-Pfad ungeklaert ist.
+extern "C" void flutter_libnx_sqlite3_probe(void);
 
 namespace {
 
@@ -460,6 +463,8 @@ int main(int argc, char* argv[]) {
   // Baseline: Auffaelligkeiten hier stammen von statischen Konstruktoren
   // oder dem Loader - beides laeuft vor main().
   flutter_libnx_scan_heap("Start");
+
+  flutter_libnx_sqlite3_probe();
 
   const Result romfs_result = romfsInit();
   if (R_FAILED(romfs_result)) {

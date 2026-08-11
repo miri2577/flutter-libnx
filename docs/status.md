@@ -272,15 +272,41 @@ Logzeile auf der SD-Karte.
       abfragte. Jetzt: Fehlertext + nullptr → saubere Dart-Exception.
       **Auf Hardware: rezkonv bleibt offen und bedienbar**, die App zeigt
       den DB-Fehler in ihrer eigenen Fehlerfläche an.
-- [ ] Nächstes Paket: sqlite3 statisch aus den devkitPro-Portlibs +
-      Symbolauflösung im Embedder (Haken in `Utils::LoadDynamicLibrary`/
-      `ResolveSymbolInDynamicLibrary` für eine registrierte Tabelle bzw.
-      dlsym-auf-sich-selbst über die eigene .dynsym), damit
-      `DynamicLibrary.open('libsqlite3.so')` trägt – der Fehlertext im
-      Patch kündigt es an.
+- [x] **sqlite3 via FFI – vollständig, auf Hardware bestätigt**
+      (2026-08-11 Nacht): rezkonv läuft fehlerfrei mit Datenbank und
+      FTS5-Volltextsuche. Die Kette (alles projektunabhängig):
+      * Amalgamation 3.53.4 selbst gebaut (`scripts/build-sqlite3.sh`,
+        devkitPro führt kein sqlite-Portlib), Flags dokumentiert;
+        FTS5 + Math + R-Tree aktiviert
+      * dl-Haken in der Engine (`patch_dart_platform_utils_dynlib_hooks`,
+        `patch_dart_ffi_dynamic_library_hooks`): `DynamicLibrary.open`/
+        Symbolauflösung fragen den Embedder; ohne ihn ehrliche Fehler
+      * Symboltabellen im Embedder (`static_libraries_horizon.cpp`):
+        278 sqlite3-Symbole (T **und** Daten – `sqlite3_temp_directory`
+        ist eine Variable!) + Prozess-Symbole (malloc/free/calloc/realloc
+        für package:ffi)
+      * `unix-none` (ohne Dateisperren) als Standard-VFS – devoptab kennt
+        keine fcntl-Locks, ein Zweitprozess existiert nicht
+      * **Zwei devoptab-Fallen in der Compat-Schicht behoben**
+        (`--wrap=read`, `--wrap=stat`): Lesen ab EOF lieferte -1 statt 0;
+        `stat()` auf eine gerade geöffnete Datei scheitert mit EIO (auch
+        ein Zweit-`open` – exklusiv gehalten). ENOENT vs. EIO
+        unterscheidet Nicht-Existenz von Belegt; im Belegt-Fall kommt
+        eine ehrliche Minimalantwort (S_IFREG|0644).
+      * C-Rauchprobe `sqlite3_probe_horizon.cpp` (open→CREATE→INSERT→
+        SELECT=42) läuft bei jedem Start – nach der Stabilisierung
+        hinter ein Flag legen oder ausbauen
+- [ ] **Bildschirmtastatur** – ohne sie keine Texteingabe (Rezept anlegen
+      geht nur per Touch-Tastatur, die es nicht gibt). Weg: swkbd-Applet
+      der Konsole an den Kanal `flutter/textinput` (JSON-Codec) anbinden:
+      `TextInput.show` → `swkbdShow` (blockierend) → Ergebnis als
+      `TextInputClient.updateEditingState` zurück.
+- [ ] `file_picker` für den Rezept-Import (Ordnernavigation) – braucht
+      einen kleinen SD-Browser oder feste Import-Verzeichnisse.
 - [ ] Bekanntes Thema, noch unbeziffert: Software-Renderer „etwas
-      ruckelig" bei rezkonv (720p, ein Thread). Erst messen, dann
-      optimieren.
+      ruckelig" (720p, ein Thread). Erst messen, dann optimieren.
+- [ ] rezkonv-Rest: `LateInitializationError` eines App-Singletons
+      (hängt mutmaßlich am Secure-Storage-Stub) – beobachten.
 - [ ] Referenz-Brocken bleibt Referenz-App/Referenz-App (dem privaten App-Repo;
       maßgeblicher Stand: `Desktop\Referenz-App-Arbeitsstand`) – nach Plan erst UI/
       Netzwerk, Video und WebView bleiben Forschungsprojekte

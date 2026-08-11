@@ -2685,11 +2685,16 @@ def patch_dart_platform_utils_dynlib(src: str) -> None:
         "  void* handle = nullptr;\n",
         "dart platform/utils.cc (LoadDynamicLibrary ohne Fallthrough)",
     )
+    # Der Anker umfasst absichtlich die erste Originalzeile des Rumpfs:
+    # Nur der Funktionskopf allein passt auch nach dem Patchen noch, und
+    # dann fuegt ein zweiter Lauf den Block erneut ein - genau das ist am
+    # 2026-08-11 passiert und hat den Hook-Block verdeckt.
     replace_once(
         path,
         "void* Utils::ResolveSymbolInDynamicLibrary(void* library_handle,\n"
         "                                           const char* symbol,\n"
-        "                                           char** error) {\n",
+        "                                           char** error) {\n"
+        "#if defined(DART_HOST_OS_LINUX)",
         "void* Utils::ResolveSymbolInDynamicLibrary(void* library_handle,\n"
         "                                           const char* symbol,\n"
         "                                           char** error) {\n"
@@ -2698,7 +2703,8 @@ def patch_dart_platform_utils_dynlib(src: str) -> None:
         "      \"Symbol lookup by name is not available on Horizon: \"\n"
         "      \"there is no runtime linker.\");\n"
         "  return nullptr;\n"
-        "#endif\n",
+        "#endif\n"
+        "#if defined(DART_HOST_OS_LINUX)",
         "dart platform/utils.cc (ResolveSymbol ohne Fallthrough)",
     )
     replace_once(
@@ -2712,6 +2718,143 @@ def patch_dart_platform_utils_dynlib(src: str) -> None:
         "#endif\n"
         "  bool ok = false;\n",
         "dart platform/utils.cc (UnloadDynamicLibrary ohne Fallthrough)",
+    )
+
+
+def patch_dart_platform_utils_dynlib_hooks(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "platform", "utils.cc")
+    # Stufe 2 zum Patch oben: Statt nur ehrlich zu scheitern, fragen die
+    # dl-Funktionen zwei schwach gebundene Haken des Embedders. Der bedient
+    # sie aus einer Tabelle statisch gelinkter Bibliotheken
+    # (embedder/src/engine/static_libraries_horizon.cpp, erster Kunde
+    # sqlite3). Ohne Embedder-Haken bleibt es beim Fehlertext - die Engine
+    # laesst sich also weiter ohne diese Datei linken.
+    replace_once(
+        path,
+        '#include "platform/utils.h"\n',
+        '#include "platform/utils.h"\n'
+        "\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "// Statisch gelinkte Bibliotheken, angeboten vom Embedder (schwach:\n"
+        "// ohne ihn greift die ehrliche Fehlermeldung unten).\n"
+        'extern "C" __attribute__((weak)) void* flutter_libnx_dl_open(\n'
+        "    const char* path);\n"
+        'extern "C" __attribute__((weak)) void* flutter_libnx_dl_sym(\n'
+        "    void* handle, const char* name);\n"
+        "#endif\n",
+        "dart platform/utils.cc (dl-Haken deklariert)",
+    )
+    replace_once(
+        path,
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  *error = strdup(\n"
+        "      \"Horizon has no runtime linker; dlopen is not available. \"\n"
+        "      \"Statically linked symbols may be offered by the embedder \"\n"
+        "      \"in a later revision.\");\n"
+        "  return nullptr;\n"
+        "#endif\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  if (flutter_libnx_dl_open != nullptr && library_path != nullptr) {\n"
+        "    void* static_handle = flutter_libnx_dl_open(library_path);\n"
+        "    if (static_handle != nullptr) {\n"
+        "      return static_handle;\n"
+        "    }\n"
+        "  }\n"
+        "  *error = strdup(\n"
+        "      \"Horizon has no runtime linker; dlopen is not available. \"\n"
+        "      \"Only libraries statically linked and registered by the \"\n"
+        "      \"embedder can be opened.\");\n"
+        "  return nullptr;\n"
+        "#endif\n",
+        "dart platform/utils.cc (LoadDynamicLibrary ueber Embedder-Haken)",
+    )
+    replace_once(
+        path,
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  *error = strdup(\n"
+        "      \"Symbol lookup by name is not available on Horizon: \"\n"
+        "      \"there is no runtime linker.\");\n"
+        "  return nullptr;\n"
+        "#endif\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  if (flutter_libnx_dl_sym != nullptr) {\n"
+        "    void* static_symbol = flutter_libnx_dl_sym(library_handle, symbol);\n"
+        "    if (static_symbol != nullptr) {\n"
+        "      return static_symbol;\n"
+        "    }\n"
+        "  }\n"
+        "  *error = strdup(\n"
+        "      \"Symbol not found among the embedder's statically linked \"\n"
+        "      \"libraries.\");\n"
+        "  return nullptr;\n"
+        "#endif\n",
+        "dart platform/utils.cc (ResolveSymbol ueber Embedder-Haken)",
+    )
+    # Aufraeumen nach dem Anker-Fehler vom 2026-08-11: Ein zweiter Lauf der
+    # Stufe 1 hatte den Fehlerblock VOR den Hook-Block gesetzt - der Fehler
+    # schnappte dann immer zuerst zu. Entfernt das Duplikat, falls vorhanden;
+    # auf sauberen Baeumen findet der Anker nichts und das ist richtig so.
+    replace_once(
+        path,
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  *error = strdup(\n"
+        "      \"Symbol lookup by name is not available on Horizon: \"\n"
+        "      \"there is no runtime linker.\");\n"
+        "  return nullptr;\n"
+        "#endif\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  if (flutter_libnx_dl_sym != nullptr) {\n",
+        "// Duplikat vom 2026-08-11 entfernt (Anker-Fehler der Stufe 1).\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  if (flutter_libnx_dl_sym != nullptr) {\n",
+        "dart platform/utils.cc (Fallthrough-Duplikat entfernt)",
+    )
+
+
+def patch_dart_ffi_dynamic_library_hooks(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "lib",
+                        "ffi_dynamic_library.cc")
+    # Stufe 2 zur Prozess-Symbolsuche: package:ffi loest seine Allokatoren
+    # (malloc/free) ueber den Prozess auf - der Fund von rezkonv_app, sobald
+    # sqlite3 selbst gefunden war. Derselbe Embedder-Haken wie in utils.cc;
+    # ohne ihn bleibt der Fehlertext.
+    replace_once(
+        path,
+        "namespace dart {\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "// Statisch gelinkte Symbole, angeboten vom Embedder - siehe\n"
+        "// platform/utils.cc, dieselben Haken.\n"
+        'extern "C" __attribute__((weak)) void* flutter_libnx_dl_sym(\n'
+        "    void* handle, const char* name);\n"
+        "#endif\n"
+        "\n"
+        "namespace dart {\n",
+        "dart lib/ffi_dynamic_library.cc (dl-Haken deklariert)",
+    )
+    replace_once(
+        path,
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Symbole lassen sich zur Laufzeit nicht ueber Namen aufloesen.\n"
+        "  void* const result = nullptr;\n"
+        "  *error = OS::SCreate(/*use malloc*/ nullptr,\n"
+        "                       \"Symbol lookup by name is not available on \"\n"
+        "                       \"Horizon: there is no runtime linker \"\n"
+        "                       \"(symbol '%s').\",\n"
+        "                       symbol.ToCString());\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  void* result = nullptr;\n"
+        "  if (flutter_libnx_dl_sym != nullptr) {\n"
+        "    result = flutter_libnx_dl_sym(nullptr, symbol.ToCString());\n"
+        "  }\n"
+        "  if (result == nullptr) {\n"
+        "    *error = OS::SCreate(/*use malloc*/ nullptr,\n"
+        "                         \"Symbol '%s' not found among the \"\n"
+        "                         \"embedder's statically linked libraries \"\n"
+        "                         \"(no runtime linker on Horizon).\",\n"
+        "                         symbol.ToCString());\n"
+        "  }\n",
+        "dart lib/ffi_dynamic_library.cc (Prozess-Symbole ueber Embedder-Haken)",
     )
 
 
@@ -3257,7 +3400,9 @@ def main() -> int:
     patch_dart_bin_native_assets(SRC)
     patch_dart_platform_utils(SRC)
     patch_dart_platform_utils_dynlib(SRC)
+    patch_dart_platform_utils_dynlib_hooks(SRC)
     patch_dart_ffi_dynamic_library(SRC)
+    patch_dart_ffi_dynamic_library_hooks(SRC)
     patch_tonic_build_config(SRC)
     patch_absl_cctz(SRC)
     patch_implicit_float_conversion(SRC)

@@ -6,6 +6,47 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-11 (Nacht, IV) – sqlite3 läuft: FFI ohne dlopen, und zwei devoptab-Fallen
+
+**rezkonv_app läuft fehlerfrei mit Datenbank und FTS5-Volltextsuche.**
+Der Weg dorthin war eine Kette aus fünf Befunden, jeder vom Log benannt:
+
+1. **`Ffi_dl_providesSymbol` ohne Fallthrough-Schutz** – vierte stille
+   Weiche, siehe Eintrag III. Danach Haken-Architektur: Engine fragt
+   schwach gebundene `flutter_libnx_dl_open`/`_dl_sym`, der Embedder
+   bedient sie aus Symboltabellen statisch gelinkter Bibliotheken.
+2. **`package:ffi` löst malloc/free über den Prozess** – eigene kleine
+   Prozess-Symboltabelle; deckt eine ganze Klasse von FFI-Paketen ab.
+3. **`sqlite3_temp_directory` ist eine Variable, keine Funktion** – die
+   nm-Tabelle muss Datensymbole (D/B/R/G) mitnehmen, nicht nur T.
+4. **devoptab: Lesen ab/hinter EOF liefert -1 statt 0** – sqlite deutete
+   das als "database disk image is malformed". `--wrap=read` stellt die
+   POSIX-Semantik her (Gegenprobe über fstat+lseek nur im Fehlerfall).
+5. **devoptab: `stat()` auf eine gerade geöffnete Datei scheitert mit
+   EIO** – ebenso ein Zweit-`open` (der Dateidienst hält exklusiv).
+   sqlites `getFileMode` fragt beim Journal-Anlegen genau so die Rechte
+   der offenen DB ab (gemeldet als irreführendes `SQLITE_IOERR_FSTAT`).
+   `--wrap=stat`: erst `__real_stat`, dann open+fstat-Gegenprobe, und im
+   eindeutigen Belegt-Fall (stat **und** open beide EIO; nicht existent
+   wäre ENOENT) die ehrliche Minimalantwort S_IFREG|0644.
+
+Werkzeug des Tages: die **C-Rauchprobe** (`sqlite3_probe_horizon.cpp`) –
+dieselbe Kette wie der Dart-Pfad, aber jeder Schritt einzeln geloggt, plus
+Roh-I/O-Gegenprobe mit denselben POSIX-Aufrufen, die sqlites VFS benutzt.
+Ohne sie hätte jede der fünf Schichten einen Hardware-Zyklus mehr gekostet.
+
+Und eine Patch-Lektion: **Anker nie nur auf den Funktionskopf setzen.**
+Der Stufe-1-Patch hat sich bei einem zweiten Lauf erneut eingefügt (der
+Kopf passt immer) und den Hook-Block verdeckt - eine Stunde Fehlersuche
+für ein Idempotenz-Detail. Anker müssen die erste Originalzeile des
+Rumpfs einschließen.
+
+Eingebaut, aber noch offen: FTS5 verlangte nur `-DSQLITE_ENABLE_FTS5`
+("no such module: fts5"). Nächstes Paket: Bildschirmtastatur über das
+swkbd-Applet an `flutter/textinput`.
+
+---
+
 ## 2026-08-11 (Nacht, III) – Erste fremde App bedienbar; die vierte stille Weiche
 
 **rezkonv_app läuft auf der Konsole und bleibt bedienbar.** Suchleiste,

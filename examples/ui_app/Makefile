@@ -64,6 +64,14 @@ ASFLAGS	:=	-g $(ARCH)
 # an libc weiter.
 #---------------------------------------------------------------------------------
 WRAPS	:=	-Wl,--wrap=close -Wl,--wrap=dup -Wl,--wrap=fstat
+# Lesen hinter dem Dateiende: devoptab liefert -1 statt 0 (EOF). Der Wrap
+# stellt die POSIX-Semantik her - ohne ihn haelt sqlite frische Datenbanken
+# fuer beschaedigt. Einzelheiten in posix_compat_horizon.cpp.
+WRAPS	+=	-Wl,--wrap=read
+# stat() auf gerade geoeffnete Dateien: devoptab liefert EIO. Der Wrap holt
+# die Werte per open+fstat nach - sqlite fragt beim Journal-Anlegen genau so
+# die Rechte der offenen Datenbank ab (IOERR_FSTAT 1802).
+WRAPS	+=	-Wl,--wrap=stat
 
 # DIAGNOSE (flutter-libnx): Waechter um jede Heap-Allokation, siehe
 # embedder/src/platform/heap_guard_horizon.cpp. Sucht die Speicherbeschaedigung,
@@ -82,7 +90,12 @@ WRAPS	:=	-Wl,--wrap=close -Wl,--wrap=dup -Wl,--wrap=fstat
 # wird.
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(WRAPS) -Wl,-u,__libnx_exception_handler -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= $(ENGINE_LIB) -lnx
+# Statisch gelinktes sqlite3 (third_party/sqlite3, scripts/build-sqlite3.sh).
+# Ueber MAKEFILE_LIST statt CURDIR, weil das Template sich selbst mit
+# geaendertem Arbeitsverzeichnis erneut aufruft.
+SQLITE_LIB	:= $(dir $(abspath $(firstword $(MAKEFILE_LIST))))../../third_party/sqlite3/libsqlite3.a
+
+LIBS	:= $(ENGINE_LIB) $(SQLITE_LIB) -lnx
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

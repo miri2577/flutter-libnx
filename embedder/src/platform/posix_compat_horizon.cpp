@@ -52,6 +52,8 @@
 #include <mutex>
 #include <string>
 
+#include "flutter_libnx/log.h"
+
 namespace {
 
 // Echte Deskriptoren vergibt newlib fortlaufend ab 0 und bleibt weit
@@ -457,6 +459,85 @@ int utimensat(int dirfd, const char* path, const struct timespec times[2],
   return -1;
 }
 
+// Für sqlite3 (os_unix.c, robust_open/robustFchown). FAT kennt keine
+// Eigentümer: geteuid liefert bewusst NICHT 0 - als "root" würde sqlite
+// versuchen, per fchown Eigentümer zu erhalten, die es hier nicht gibt.
+uid_t geteuid(void) {
+  return 1;
+}
+
+int fchown(int fd, uid_t owner, gid_t group) {
+  // Nichts zu besitzen, nichts zu ändern - Erfolg ist die ehrliche Antwort.
+  (void)fd;
+  (void)owner;
+  (void)group;
+  return 0;
+}
+
+// devoptab-Falle (Fund 2026-08-11, sqlite3-Rauchprobe): stat() auf eine
+// Datei, die gerade GEOEFFNET ist, scheitert mit EIO. sqlites getFileMode
+// fragt beim Anlegen des Journals genau so die Rechte der offenen Datenbank
+// ab und meldete den Fehlschlag als SQLITE_IOERR_FSTAT (1802). Die
+// Gegenprobe ueber open+fstat liefert ehrliche Werte - ein zweites
+// Lese-Handle auf eine offene Datei erlaubt der Dateidienst.
+extern "C" int __real_stat(const char* path, struct stat* st);
+
+extern "C" int __wrap_stat(const char* path, struct stat* st) {
+  const int rc = __real_stat(path, st);
+  if (rc == 0) {
+    return 0;
+  }
+  const int saved_errno = errno;
+  const int fd = ::open(path, O_RDONLY);
+  if (fd >= 0) {
+    const int frc = __real_fstat(fd, st);
+    ::close(fd);
+    if (frc == 0) {
+      return 0;
+    }
+  }
+  if (saved_errno == EIO && errno == EIO) {
+    // Beides EIO heisst: Die Datei existiert, ist aber vom Dateidienst
+    // exklusiv gehalten (das eigene offene Handle) - waere sie weg, kaeme
+    // ENOENT (auf Hardware gemessen, siehe porting-notes). Die ehrliche
+    // Minimalantwort: regulaere Datei, Standardrechte, Groesse unbekannt.
+    // sqlites getFileMode braucht nur den Modus; wer die Groesse einer
+    // Datei will, die er selbst offen haelt, hat fstat auf dem Handle.
+    memset(st, 0, sizeof(*st));
+    st->st_mode = S_IFREG | 0644;
+    st->st_nlink = 1;
+    return 0;
+  }
+  errno = saved_errno;
+  return -1;
+}
+
+// devoptab-Falle (Fund 2026-08-11, sqlite3-Rauchprobe): Lesen an oder
+// hinter dem Dateiende liefert -1 statt der POSIX-Antwort 0 (EOF).
+// sqlite liest routinemaessig ueber das Ende (Journal-Header, Seite 1
+// einer frischen Datenbank) und deutete den falschen Fehler als
+// "database disk image is malformed". Der Wrap stellt die POSIX-Semantik
+// fuer regulaere Dateien her; alles andere (Sockets, Fehler mitten in der
+// Datei) reicht er unveraendert durch.
+extern "C" ssize_t __real_read(int fd, void* buf, size_t count);
+
+extern "C" ssize_t __wrap_read(int fd, void* buf, size_t count) {
+  const ssize_t got = __real_read(fd, buf, count);
+  if (got >= 0) {
+    return got;
+  }
+  const int saved_errno = errno;
+  struct stat st = {};
+  if (__real_fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+    const off_t pos = ::lseek(fd, 0, SEEK_CUR);
+    if (pos >= 0 && pos >= st.st_size) {
+      return 0;  // EOF, wie POSIX es verlangt
+    }
+  }
+  errno = saved_errno;
+  return -1;
+}
+
 int __wrap_close(int fd) {
   if (ReleaseHandle(fd)) {
     return 0;
@@ -494,7 +575,13 @@ int __wrap_fstat(int fd, struct stat* st) {
     errno = EBADF;
     return -1;
   }
-  return __real_fstat(fd, st);
+  const int rc = __real_fstat(fd, st);
+  // DIAGNOSE (SQLITE_IOERR_FSTAT 1802): Welcher fstat scheitert womit?
+  // Nach der Fehlersuche wieder ausbauen.
+  if (rc != 0) {
+    LOG_WARN("fstat(%d) scheitert: errno %d", fd, errno);
+  }
+  return rc;
 }
 
 }  // extern "C"
