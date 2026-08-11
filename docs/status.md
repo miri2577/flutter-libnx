@@ -239,6 +239,25 @@ Logzeile auf der SD-Karte.
       Nebenbei repariert: `csrngInitialize`/`csrngExit`-Paar –
       `Random.secure()` hätte bisher EIO geworfen.
 
+## Meilenstein 4 – Allgemeiner Bauweg
+
+- [x] **Ein unverändertes `flutter create`-Projekt läuft auf der Konsole**
+      (2026-08-11): `flutter create counter_demo` (Standard-Counter, keine
+      einzige Änderung am Projekt) → `build-dart-app.ps1 -Project …`
+      (Assets über `flutter build bundle`, Kernel über die Paketauflösung
+      des Projekts) → `rebuild-all.sh` → NRO. Auf Hardware bestätigt,
+      Touch und Controller wirken. Damit ist der Bauweg projektunabhängig
+      belegt, nicht nur am eigenen Beispiel.
+- [ ] Erste echte fremde App: `rezkonv_app` (Kochbuch, miri2577) –
+      Sondierung durch Bundle-/Kernel-Stufe steht aus. Erwartete Brocken:
+      `drift`/`sqlite3_flutter_libs` (FFI ohne dlopen → sqlite3 statisch
+      aus devkitPro-Portlibs + `DynamicLibrary.process()`), Gruppe-B-Stubs
+      (`path_provider`, `shared_preferences`, `file_picker`, …).
+- [ ] Referenz-Brocken bleibt Referenz-App/Referenz-App (dem privaten App-Repo;
+      maßgeblicher Stand: `Desktop\Referenz-App-Arbeitsstand`) – nach Plan erst UI/
+      Netzwerk, Video und WebView bleiben Forschungsprojekte
+      (`docs/target-apps.md`).
+
 ## Fehlersuche vom 2026-08-10 – abgeschlossen
 
 **Ergebnis vorweg:** Vier Ursachen lagen hintereinander, jede verdeckte die
