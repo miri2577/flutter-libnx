@@ -38,8 +38,13 @@ namespace flutter_libnx {
 
 namespace {
 
-// Später aus der NACP; für den Beweis reicht eine feste Kennung.
-constexpr const char* kAppId = "ui_app";
+// Kommt aus dem Build (Makefile: -DFLUTTER_LIBNX_APP_ID="<target>") -
+// jede App bekommt so ihr eigenes Datenverzeichnis, ohne dass jemand
+// daran denken muss.
+#ifndef FLUTTER_LIBNX_APP_ID
+#define FLUTTER_LIBNX_APP_ID "flutter_app"
+#endif
+constexpr const char* kAppId = FLUTTER_LIBNX_APP_ID;
 
 std::string BaseDir() {
   return std::string("/switch/flutter_apps/") + kAppId;
@@ -270,6 +275,138 @@ bool HandleSharedPreferences(FLUTTER_API_SYMBOL(FlutterEngine) engine,
   return false;
 }
 
+// --- flutter_secure_storage -------------------------------------------------
+//
+// EHRLICHKEITSHINWEIS: "Secure" ist auf dieser Plattform nicht leistbar.
+// Die SD-Karte ist FAT, es gibt keinen Schluesselbund und keine
+// Nutzerkonten - die Werte liegen im KLARTEXT unter
+// /switch/flutter_apps/<id>/secure_storage.std. Das ist trotzdem die
+// richtige Abwaegung: Die Alternative (MissingPluginException) liess
+// rezkonv mit einem LateInitializationError haengen, und die Karte
+// steckt in der eigenen Konsole. Wer echte Geheimnisse hat, gehoert
+// nicht auf eine Homebrew-SD.
+//
+// Kanal plugins.it_nomads.com/flutter_secure_storage, StandardMethodCodec.
+// Argumente kommen als Map, der Schluessel heisst "key", der Wert "value";
+// zusaetzlich schickt das Plugin "options", die hier bedeutungslos sind.
+
+StdValue g_secure = StdValue::Map();
+bool g_secure_loaded = false;
+
+std::string SecurePath() {
+  return BaseDir() + "/secure_storage.std";
+}
+
+void LoadSecure() {
+  if (g_secure_loaded) {
+    return;
+  }
+  g_secure_loaded = true;
+  g_secure = StdValue::Map();
+
+  FILE* f = fopen(SecurePath().c_str(), "rb");
+  if (f == nullptr) {
+    return;
+  }
+  std::vector<uint8_t> data;
+  uint8_t chunk[4096];
+  size_t n = 0;
+  while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+    data.insert(data.end(), chunk, chunk + n);
+  }
+  fclose(f);
+
+  size_t cursor = 0;
+  StdValue loaded;
+  if (DecodeStdValue(data.data(), data.size(), &cursor, &loaded) &&
+      loaded.type == StdValue::Type::kMap) {
+    g_secure = std::move(loaded);
+  }
+}
+
+bool SaveSecure() {
+  if (!EnsureDir(BaseDir())) {
+    return false;
+  }
+  std::vector<uint8_t> data;
+  EncodeStdValue(g_secure, &data);
+  const std::string path = SecurePath();
+  const std::string tmp = path + ".neu";
+  FILE* f = fopen(tmp.c_str(), "wb");
+  if (f == nullptr) {
+    return false;
+  }
+  const bool written = fwrite(data.data(), 1, data.size(), f) == data.size();
+  fclose(f);
+  if (!written) {
+    remove(tmp.c_str());
+    return false;
+  }
+  remove(path.c_str());
+  return rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+bool HandleSecureStorage(FLUTTER_API_SYMBOL(FlutterEngine) engine,
+                         const FlutterPlatformMessage* message,
+                         const std::string& method,
+                         const StdValue& args) {
+  LoadSecure();
+  const StdValue* key = MapGet(args, "key");
+  const bool has_key =
+      key != nullptr && key->type == StdValue::Type::kString;
+
+  if (method == "read") {
+    const StdValue* value =
+        has_key ? MapGet(g_secure, key->as_string) : nullptr;
+    Respond(engine, message,
+            EncodeStdSuccess(value != nullptr ? *value : StdValue::Null()));
+    return true;
+  }
+  if (method == "containsKey") {
+    Respond(engine, message,
+            EncodeStdSuccess(StdValue::Bool(
+                has_key && MapGet(g_secure, key->as_string) != nullptr)));
+    return true;
+  }
+  if (method == "readAll") {
+    Respond(engine, message, EncodeStdSuccess(g_secure));
+    return true;
+  }
+  if (method == "write") {
+    const StdValue* value = MapGet(args, "value");
+    if (has_key && value != nullptr) {
+      MapSet(&g_secure, key->as_string, *value);
+      SaveSecure();
+    }
+    Respond(engine, message, EncodeStdSuccess(StdValue::Null()));
+    return true;
+  }
+  if (method == "delete") {
+    if (has_key) {
+      auto& entries = g_secure.as_map;
+      for (size_t i = 0; i < entries.size(); i++) {
+        if (entries[i].first.type == StdValue::Type::kString &&
+            entries[i].first.as_string == key->as_string) {
+          entries.erase(entries.begin() + i);
+          break;
+        }
+      }
+      SaveSecure();
+    }
+    Respond(engine, message, EncodeStdSuccess(StdValue::Null()));
+    return true;
+  }
+  if (method == "deleteAll") {
+    g_secure = StdValue::Map();
+    SaveSecure();
+    Respond(engine, message, EncodeStdSuccess(StdValue::Null()));
+    return true;
+  }
+
+  LOG_WARN("secure_storage: unbekannte Methode '%s'", method.c_str());
+  return false;
+}
+
 // --- file_picker ------------------------------------------------------------
 //
 // Einen Datei-Browser als eigene Vollbild-UI gibt es (noch) nicht. Die
@@ -307,40 +444,78 @@ bool HasAllowedExtension(const std::string& name,
   return false;
 }
 
+// ACHTUNG Codec-Falle: FilePickerIO waehlt den Codec nach Plattform
+// (file_picker_io.dart:7) - auf "Linux", als das wir uns melden, spricht
+// der Kanal JSONMethodCodec, NICHT den Standard-Codec. Die erste Fassung
+// dieses Handlers dekodierte binaer und verwarf jede Nachricht.
+void RespondJson(FLUTTER_API_SYMBOL(FlutterEngine) engine,
+                 const FlutterPlatformMessage* message,
+                 const std::string& payload) {
+  if (message->response_handle == nullptr) {
+    return;
+  }
+  FlutterEngineSendPlatformMessageResponse(
+      engine, message->response_handle,
+      reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+}
+
+std::string JsonEscapeMinimal(const std::string& s) {
+  std::string out;
+  for (const char c : s) {
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
 bool HandleFilePicker(FLUTTER_API_SYMBOL(FlutterEngine) engine,
-                      const FlutterPlatformMessage* message,
-                      const std::string& method,
-                      const StdValue& args) {
-  if (method == "clear") {
-    Respond(engine, message, EncodeStdSuccess(StdValue::Bool(true)));
+                      const FlutterPlatformMessage* message) {
+  const std::string msg(reinterpret_cast<const char*>(message->message),
+                        message->message_size);
+  const auto method_is = [&](const char* m) {
+    return msg.find(std::string("\"method\":\"") + m + "\"") !=
+           std::string::npos;
+  };
+
+  if (method_is("clear")) {
+    RespondJson(engine, message, "[true]");
     return true;
   }
   EnsureDir(ImportDir());
-  if (method == "dir") {
-    Respond(engine, message, EncodeStdSuccess(StdValue::String(ImportDir())));
+  if (method_is("dir")) {
+    RespondJson(engine, message, "[\"" + ImportDir() + "\"]");
     return true;
   }
 
   // any / custom / media / image / video / audio - alle laufen auf eine
   // Dateiliste hinaus.
   std::vector<std::string> extensions;
-  if (const StdValue* list = MapGet(args, "allowedExtensions")) {
-    for (const StdValue& item : list->as_list) {
-      if (item.type == StdValue::Type::kString) {
-        std::string ext = item.as_string;
+  const size_t ext_start = msg.find("\"allowedExtensions\":[");
+  if (ext_start != std::string::npos) {
+    size_t i = ext_start + 21;
+    while (i < msg.size() && msg[i] != ']') {
+      if (msg[i] == '"') {
+        const size_t end = msg.find('"', i + 1);
+        if (end == std::string::npos) {
+          break;
+        }
+        std::string ext = msg.substr(i + 1, end - i - 1);
         for (char& c : ext) {
           if (c >= 'A' && c <= 'Z') {
             c = static_cast<char>(c - 'A' + 'a');
           }
         }
         extensions.push_back(ext);
+        i = end + 1;
+      } else {
+        i++;
       }
     }
   }
-  const StdValue* multi = MapGet(args, "allowMultipleSelection");
   const bool allow_multiple =
-      multi != nullptr && multi->type == StdValue::Type::kBool &&
-      multi->as_bool;
+      msg.find("\"allowMultipleSelection\":true") != std::string::npos;
 
   struct Candidate {
     std::string name;
@@ -373,7 +548,7 @@ bool HandleFilePicker(FLUTTER_API_SYMBOL(FlutterEngine) engine,
   if (found.empty()) {
     LOG_INFO("file_picker: keine passenden Dateien in %s - dorthin kopieren",
              ImportDir().c_str());
-    Respond(engine, message, EncodeStdSuccess(StdValue::Null()));
+    RespondJson(engine, message, "[null]");
     return true;
   }
 
@@ -389,19 +564,21 @@ bool HandleFilePicker(FLUTTER_API_SYMBOL(FlutterEngine) engine,
     found = {found[best]};
   }
 
-  StdValue result = StdValue::List();
-  for (const Candidate& file : found) {
-    StdValue entry = StdValue::Map();
-    MapSet(&entry, "path", StdValue::String(ImportDir() + "/" + file.name));
-    MapSet(&entry, "name", StdValue::String(file.name));
-    MapSet(&entry, "size", StdValue::Int(file.size));
-    MapSet(&entry, "bytes", StdValue::Null());
-    MapSet(&entry, "identifier", StdValue::Null());
-    result.as_list.push_back(std::move(entry));
+  std::string list = "[";
+  for (size_t i = 0; i < found.size(); i++) {
+    const Candidate& file = found[i];
+    if (i > 0) {
+      list += ",";
+    }
+    list += "{\"path\":\"" + JsonEscapeMinimal(ImportDir() + "/" + file.name) +
+            "\",\"name\":\"" + JsonEscapeMinimal(file.name) +
+            "\",\"size\":" + std::to_string(file.size) +
+            ",\"bytes\":null,\"identifier\":null}";
     LOG_INFO("file_picker: liefere %s (%lld Bytes)", file.name.c_str(),
              static_cast<long long>(file.size));
   }
-  Respond(engine, message, EncodeStdSuccess(result));
+  list += "]";
+  RespondJson(engine, message, "[" + list + "]");
   return true;
 }
 
@@ -412,13 +589,21 @@ bool HandleFilePicker(FLUTTER_API_SYMBOL(FlutterEngine) engine,
 extern "C" bool flutter_libnx_handle_plugin_message(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const FlutterPlatformMessage* message) {
+  // file_picker zuerst: Der Kanal spricht auf dieser Plattform JSON
+  // (siehe HandleFilePicker), nicht den Standard-Codec.
+  if (strcmp(message->channel, "miguelruivo.flutter.plugins.filepicker") ==
+      0) {
+    return HandleFilePicker(engine, message);
+  }
+
   const bool is_path_provider =
       strcmp(message->channel, "plugins.flutter.io/path_provider") == 0;
   const bool is_shared_preferences =
       strcmp(message->channel, "plugins.flutter.io/shared_preferences") == 0;
-  const bool is_file_picker =
-      strcmp(message->channel, "miguelruivo.flutter.plugins.filepicker") == 0;
-  if (!is_path_provider && !is_shared_preferences && !is_file_picker) {
+  const bool is_secure_storage =
+      strcmp(message->channel,
+             "plugins.it_nomads.com/flutter_secure_storage") == 0;
+  if (!is_path_provider && !is_shared_preferences && !is_secure_storage) {
     return false;
   }
 
@@ -434,8 +619,8 @@ extern "C" bool flutter_libnx_handle_plugin_message(
   if (is_path_provider) {
     return HandlePathProvider(engine, message, method);
   }
-  if (is_file_picker) {
-    return HandleFilePicker(engine, message, method, args);
+  if (is_secure_storage) {
+    return HandleSecureStorage(engine, message, method, args);
   }
   return HandleSharedPreferences(engine, message, method, args);
 }

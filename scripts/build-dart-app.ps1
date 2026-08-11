@@ -103,6 +103,41 @@ if (-not (Test-Path $packages)) { throw "Nicht gefunden: $packages" }
 $entry = "$Project\lib\main.dart"
 if (-not (Test-Path $entry)) { throw "Nicht gefunden: $entry" }
 
+# --- Horizon-Registrant ------------------------------------------------------
+# `flutter build` erzeugt normalerweise einen Plugin-Registrant, den die
+# Engine beim Isolate-Start aufruft. Ohne ihn bleibt bei Paketen mit
+# `static late _instance` (Beispiel: file_picker) die Plattform-Instanz
+# ungesetzt - jeder Zugriff wirft LateInitializationError. Der Fund kam
+# von rezkonv: "Verzeichnis waehlen" tat nichts.
+#
+# Hier entsteht das Horizon-Gegenstueck: ein erzeugter Einstiegspunkt, der
+# vor main() die METHOD-CHANNEL-Implementierungen registriert - nicht die
+# Desktop-Varianten (FilePickerLinux wuerde zenity als Prozess starten,
+# was es auf Horizon nicht gibt). Die Kanaele beantwortet der Embedder
+# (plugins_horizon.cpp). Die Liste waechst mit den unterstuetzten Paketen.
+$appName = (Select-String -Path "$Project\pubspec.yaml" -Pattern '^name:\s*(\S+)').Matches[0].Groups[1].Value
+$packageConfigText = Get-Content $packages -Raw
+$registrations = @()
+$imports = @()
+if ($packageConfigText -match '"name"\s*:\s*"file_picker"') {
+  $imports += "import 'package:file_picker/file_picker.dart' show FilePickerIO;"
+  $registrations += '  FilePickerIO.registerWith();'
+}
+
+if ($registrations.Count -gt 0) {
+  Write-Host ("==> Horizon-Registrant ({0} Registrierung(en))" -f $registrations.Count)
+  $lines = @('// Von build-dart-app.ps1 erzeugt - nicht von Hand pflegen.')
+  $lines += "import 'package:$appName/main.dart' as app;"
+  $lines += $imports
+  $lines += ''
+  $lines += 'void main() {'
+  $lines += $registrations
+  $lines += '  app.main();'
+  $lines += '}'
+  $entry = "$generated\horizon_main.dart"
+  $lines | Set-Content -Encoding utf8 $entry
+}
+
 Write-Host '==> Kernel erzeugen'
 $dill = "$generated\app.dill"
 & "$sdk\bin\dartaotruntime.exe" "$sdk\bin\snapshots\gen_kernel_aot.dart.snapshot" `

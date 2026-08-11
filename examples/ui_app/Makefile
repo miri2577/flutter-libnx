@@ -39,6 +39,10 @@ CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
+# Die App-Kennung bestimmt das Datenverzeichnis der Plugins
+# (/switch/flutter_apps/<id>/). Sie kommt aus dem Build statt fest im
+# Quelltext zu stehen - jede App bekommt so automatisch ihr eigenes.
+CFLAGS	+=	-DFLUTTER_LIBNX_APP_ID=\"$(TARGET)\"
 
 #---------------------------------------------------------------------------------
 # Fuer Horizon gebaute Flutter Engine.

@@ -6,6 +6,41 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-11 (Nacht, VI) – Der fehlende Plugin-Registrant und die Codec-Falle
+
+**Der `LateInitializationError` war nie Secure Storage** – er war
+`FilePicker.platform`: ein `static late _instance`, das nur der von
+`flutter build` erzeugte Dart-Plugin-Registrant setzt, den die Engine beim
+Isolate-Start aufruft. Unser gen_kernel-Build hatte keinen.
+
+**Horizon-Registrant** (in `build-dart-app.ps1`): ein erzeugter
+Einstiegspunkt, der vor `main()` die METHOD-CHANNEL-Implementierungen
+registriert (`FilePickerIO.registerWith()`), nicht die Desktop-Varianten –
+`FilePickerLinux` würde zenity als Prozess starten, den es nicht gibt.
+Die Liste wächst mit den unterstützten Paketen; nur Pakete mit dem
+`late _instance`-Muster brauchen einen Eintrag (path_provider und
+shared_preferences haben Method-Channel-Voreinstellungen und liefen
+deshalb ohne).
+
+**Codec-Falle:** `FilePickerIO` wählt seinen Codec ZUR LAUFZEIT nach
+Plattform (`file_picker_io.dart:7`): auf "Linux" – als das wir uns melden –
+JSONMethodCodec, sonst StandardMethodCodec. Die erste Handler-Fassung
+dekodierte binär und verwarf jede Nachricht ("nicht dekodierbar,
+26 Bytes" = `{"method":"dir","args":{}}`). Bei jedem neuen Plugin-Kanal
+zuerst nachsehen, welchen Codec die Dart-Seite tatsächlich benutzt.
+
+Dazu in derselben Runde: `flutter_secure_storage` dateibasiert (KLARTEXT,
+ehrlich dokumentiert – FAT hat keinen Schlüsselbund; die Alternative war
+der hängende Import), App-ID aus dem Build
+(`-DFLUTTER_LIBNX_APP_ID=\"$(TARGET)\"` statt fest im Quelltext).
+
+Auf Hardware bestätigt: Verzeichnisauswahl liefert den Import-Pfad,
+Dateiauswahl scannt ihn, leere Antwort läuft als "abgebrochen" durch die
+App. Volltest mit echter REZKONV-Datei steht aus (Datei muss per
+Kartenleser auf die SD).
+
+---
+
 ## 2026-08-11 (Nacht, V) – Texteingabe und Dateiauswahl: der volle App-Zyklus steht
 
 **Auf Hardware bestätigt: Rezept mit der Systemtastatur angelegt, in
