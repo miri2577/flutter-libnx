@@ -229,7 +229,15 @@ Logzeile auf der SD-Karte.
       hoch. Zustandsverfolgung in `examples/ui_app/source/main.cpp`
       (`SendTouchEvents`), Auslesen in `switch_platform.cpp`.
 - [x] Controller – siehe „Controller-Eingabe wirkt" oben
-- [ ] Platform Channels
+- [x] **Platform Channels** (2026-08-11) – `platform_message_callback` im
+      Embedder, MethodChannel `flutter_libnx/system` mit JSONMethodCodec.
+      Nachweis auf Hardware: Akku-Knopf in der App fragt den Batteriestand
+      ab, der Embedder antwortet über den psm-Dienst, Wert stimmt.
+      Wichtig: Mit registriertem Callback muss der Embedder **jede**
+      Nachricht mit response_handle beantworten (leere Antwort = „nicht
+      implementiert"), sonst hängt das await auf der Dart-Seite für immer.
+      Nebenbei repariert: `csrngInitialize`/`csrngExit`-Paar –
+      `Random.secure()` hätte bisher EIO geworfen.
 
 ## Fehlersuche vom 2026-08-10 – abgeschlossen
 

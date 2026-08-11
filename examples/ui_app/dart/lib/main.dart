@@ -10,6 +10,7 @@
 // von einer für Android – abgesehen von der Eingabe, die als Nächstes kommt.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const SwitchDemoApp());
@@ -50,9 +51,33 @@ class _HomePageState extends State<HomePage>
     vsync: this,
   )..repeat(reverse: true);
 
+  // Der erste Platform Channel des Ports. JSONMethodCodec statt des
+  // voreingestellten StandardMethodCodec: Das Binärformat des Standards
+  // müsste der Embedder erst nachbauen, JSON kann er mit Bordmitteln
+  // beantworten. Die Gegenseite steht in examples/ui_app/source/main.cpp
+  // (PlatformMessageCallback).
+  static const MethodChannel _system =
+      MethodChannel('flutter_libnx/system', JSONMethodCodec());
+
   int _frames = 0;
   int _taps = 0;
   int _second = 0;
+  String _battery = 'nicht abgefragt';
+
+  Future<void> _queryBattery() async {
+    // Absichtlich mit sichtbarem Fehlerbild statt stillem Schlucken: Ob die
+    // Antwort, ein PlatformException-Fehler aus dem Embedder oder eine
+    // MissingPluginException kommt, unterscheidet drei verschiedene
+    // Fehlerquellen im Kanal.
+    try {
+      final int? level = await _system.invokeMethod<int>('getBatteryLevel');
+      setState(() => _battery = '$level %');
+    } on PlatformException catch (e) {
+      setState(() => _battery = 'Fehler: ${e.code}');
+    } on MissingPluginException {
+      setState(() => _battery = 'Kanal nicht implementiert');
+    }
+  }
 
   // Wer gerade den Fokus hat – oder ob überhaupt jemand.
   String _focusName() {
@@ -178,6 +203,23 @@ class _HomePageState extends State<HomePage>
                   icon: const Icon(Icons.refresh),
                   label: Text(
                     _second == 0 ? 'Zweites Ziel' : 'Zweites: $_second',
+                    style: const TextStyle(fontSize: 22),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32,
+                      vertical: 24,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 24),
+                // Der Platform-Channel-Nachweis: Druck auf den Knopf läuft
+                // einmal komplett Dart -> Embedder -> psm-Dienst -> Dart.
+                OutlinedButton.icon(
+                  onPressed: _queryBattery,
+                  icon: const Icon(Icons.battery_full),
+                  label: Text(
+                    'Akku: $_battery',
                     style: const TextStyle(fontSize: 22),
                   ),
                   style: OutlinedButton.styleFrom(

@@ -54,7 +54,7 @@ Write-Host '==> Kernel erzeugen (Framework ueber package_config.json)'
   --aot `
   --packages $packages `
   -o $dill `
-  "$app\dart\main.dart"
+  "$app\dart\lib\main.dart"
 if ($LASTEXITCODE -ne 0) { throw "gen_kernel fehlgeschlagen" }
 Write-Host ("    {0:N2} MB" -f ((Get-Item $dill).Length / 1MB))
 

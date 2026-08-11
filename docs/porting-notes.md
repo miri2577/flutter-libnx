@@ -6,6 +6,33 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-11 (Nacht, II) – Platform Channels
+
+**Auf Hardware bestätigt:** MethodChannel `flutter_libnx/system`, Dart fragt
+den Batteriestand ab, der Embedder antwortet über `psm` – Wert stimmt.
+
+Entscheidungen und Fallen:
+
+* **JSONMethodCodec statt StandardMethodCodec.** Das Binärformat des
+  Standards müsste der Embedder erst nachbauen; JSON ist eine Zeichenkette
+  mit bekannter Form (`{"method":"...","args":...}`), die Antwort ein
+  JSON-Array: `[ergebnis]` für Erfolg, `[code, meldung, details]` für
+  Fehler. Der Codec wird auf der Dart-Seite am Kanal gesetzt.
+* **Mit registriertem `platform_message_callback` beantwortet die Engine
+  nichts mehr von selbst.** Jede Nachricht mit `response_handle` muss
+  quittiert werden – auch fremde Kanäle wie `flutter/textinput` und
+  `flutter/mousecursor`, die das Framework ungefragt schickt. Leere Antwort
+  = „nicht implementiert" (MissingPluginException, auf die Dart-Code gefasst
+  ist). Ein liegen gelassener Handle lässt das `await` für immer hängen.
+* **`Random.secure()` war bisher tot:** `csrngGetRandomBytes` lief ohne
+  `csrngInitialize` und antwortete `LibnxError_NotInitialized` → EIO. Jetzt
+  als Init/Exit-Paar (`random_horizon.cpp`), wie `pl:u` und `psm` – der
+  Wirtsprozess vergisst nichts.
+* Der Snapshot wächst durch `package:flutter/services.dart` von 150.948 auf
+  800.477 Zeilen Assembly – erwartbar, kein Fehlerbild.
+
+---
+
 ## 2026-08-11 (Nacht) – Der Wirtsprozess vergisst nichts
 
 Leitmotiv des Tages, in einem Satz: **Die NRO läuft im Prozess des Spiels,

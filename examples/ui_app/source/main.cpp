@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "embedder.h"
 
@@ -31,6 +32,7 @@
 extern "C" void flutter_libnx_scan_heap(const char* label);
 extern "C" void flutter_libnx_heal_heap(void);
 extern "C" void flutter_libnx_fonts_cleanup(void);
+extern "C" void flutter_libnx_random_cleanup(void);
 
 namespace {
 
@@ -38,6 +40,14 @@ constexpr const char* kHostIp = "192.168.0.153";
 constexpr uint16_t kHostPort = 28800;
 
 flutter_libnx::SwitchPlatform* g_platform = nullptr;
+
+// Für den Platform-Message-Rückruf: Er bekommt nur user_data, aber zum
+// Antworten braucht er die Engine. Gesetzt direkt nach FlutterEngineInitialize.
+FLUTTER_API_SYMBOL(FlutterEngine) g_engine = nullptr;
+
+// Ob psmInitialize gelang - ohne den Dienst antwortet der Batterie-Kanal
+// mit einem Fehler statt mit erfundenen Werten.
+bool g_psm_ready = false;
 
 // Steht der erste Frame auf dem Bildschirm, hat `runApp()` sicher gebaut –
 // der Anhaltspunkt, ab dem das View-Fokus-Ereignis einen Empfänger hat
@@ -293,6 +303,72 @@ void SendKeyEvents(FLUTTER_API_SYMBOL(FlutterEngine) engine,
   }
 }
 
+// Platform Channels: die erste echte Rückrichtung Dart -> Plattform.
+//
+// Die Dart-Seite benutzt einen MethodChannel mit JSONMethodCodec - bewusst
+// nicht den StandardMethodCodec: Dessen Binärformat nachzubauen wäre eine
+// eigene Baustelle, JSON dagegen ist hier eine Zeichenkette mit bekannter
+// Form ({"method":"...","args":...}) und die Antwort ein JSON-Array:
+// [ergebnis] für Erfolg, [code, meldung, details] für Fehler.
+//
+// WICHTIG: Sobald ein platform_message_callback registriert ist, beantwortet
+// die Engine NICHTS mehr von selbst. Jede Nachricht mit response_handle muss
+// beantwortet werden - auch die, die uns nicht interessieren (das Framework
+// schickt beim Start z. B. flutter/mousecursor und flutter/textinput). Eine
+// leere Antwort heißt für das Framework "nicht implementiert" und löst die
+// MissingPluginException aus, auf die gut geschriebener Dart-Code gefasst ist.
+// Wer den Handle dagegen liegen lässt, lässt das await auf der Dart-Seite
+// für immer hängen.
+
+// Liest den Methodennamen aus {"method":"...",...}. Kein JSON-Parser -
+// für das bekannte Format des eigenen Codecs reicht die Suche nach dem
+// Schlüssel, und die Nachricht kommt vom eigenen Dart-Code, nicht von außen.
+bool JsonMethodIs(const uint8_t* message, size_t size, const char* method) {
+  const std::string text(reinterpret_cast<const char*>(message), size);
+  const std::string needle = std::string("\"method\":\"") + method + "\"";
+  return text.find(needle) != std::string::npos;
+}
+
+void PlatformMessageCallback(const FlutterPlatformMessage* message,
+                             void* user_data) {
+  if (message == nullptr) {
+    return;
+  }
+
+  auto respond = [&](const char* json) {
+    if (message->response_handle == nullptr) {
+      return;
+    }
+    FlutterEngineSendPlatformMessageResponse(
+        g_engine, message->response_handle,
+        reinterpret_cast<const uint8_t*>(json),
+        json != nullptr ? strlen(json) : 0);
+  };
+
+  if (strcmp(message->channel, "flutter_libnx/system") == 0) {
+    if (JsonMethodIs(message->message, message->message_size,
+                     "getBatteryLevel")) {
+      u32 charge = 0;
+      if (g_psm_ready &&
+          R_SUCCEEDED(psmGetBatteryChargePercentage(&charge))) {
+        char buffer[16];
+        snprintf(buffer, sizeof(buffer), "[%u]", charge);
+        respond(buffer);
+      } else {
+        respond("[\"unavailable\",\"psm liefert keinen Batteriestand\",null]");
+      }
+      return;
+    }
+    // Unbekannte Methode auf unserem Kanal: "nicht implementiert".
+    respond(nullptr);
+    return;
+  }
+
+  // Fremde Kanäle (flutter/textinput, flutter/mousecursor, ...): quittieren,
+  // damit kein await hängen bleibt. Siehe Kommentar oben.
+  respond(nullptr);
+}
+
 }  // namespace
 
 // Diese vier Symbole erzeugt gen_snapshot in app_aot.s. Sie werden fest
@@ -443,6 +519,7 @@ int main(int argc, char* argv[]) {
   project.assets_path = "romfs:/flutter_assets";
   project.icu_data_path = "romfs:/icudtl.dat";
   project.log_message_callback = EngineLog;
+  project.platform_message_callback = PlatformMessageCallback;
   project.vm_snapshot_data = kDartVmSnapshotData;
   project.vm_snapshot_instructions = kDartVmSnapshotInstructions;
   project.isolate_snapshot_data = kDartIsolateSnapshotData;
@@ -483,6 +560,13 @@ int main(int argc, char* argv[]) {
   custom_runners.ui_task_runner = &runner_description;
   project.custom_task_runners = &custom_runners;
 
+  // Batteriedienst für den Platform-Channel-Nachweis. Scheitert das, läuft
+  // alles Übrige weiter - der Kanal antwortet dann mit einem Fehler.
+  g_psm_ready = R_SUCCEEDED(psmInitialize());
+  if (!g_psm_ready) {
+    LOG_WARN("psmInitialize fehlgeschlagen - Batteriekanal meldet Fehler");
+  }
+
   FLUTTER_API_SYMBOL(FlutterEngine) engine = nullptr;
   flutter_libnx_scan_heap("vor EngineInitialize");
   LOG_INFO("FlutterEngineInitialize ...");
@@ -490,6 +574,7 @@ int main(int argc, char* argv[]) {
       FLUTTER_ENGINE_VERSION, &renderer, &project, nullptr, &engine);
   LOG_INFO("FlutterEngineInitialize = %d (%s)", static_cast<int>(result),
            ResultName(result));
+  g_engine = engine;
 
   if (result == kSuccess) {
     flutter_libnx_scan_heap("vor RunInitialized");
@@ -605,6 +690,11 @@ int main(int argc, char* argv[]) {
   // (hbmenu-Reload) starb mit 2011-0102 (HIPC, "out of sessions").
   // romfs haengt an einem Storage-Handle mit derselben Lebensdauer.
   flutter_libnx_fonts_cleanup();
+  flutter_libnx_random_cleanup();
+  if (g_psm_ready) {
+    psmExit();
+    g_psm_ready = false;
+  }
   romfsExit();
 
   // Die Senke bleibt bis zuletzt offen: Wird sie vor dem Abbau geschlossen,

@@ -19,11 +19,44 @@
 #include <stddef.h>
 #include <sys/reent.h>
 
+namespace {
+
+// csrng braucht eine Dienst-Session. Ohne csrngInitialize antwortet
+// csrngGetRandomBytes mit LibnxError_NotInitialized - Random.secure() in
+// Dart waere damit tot gewesen; der Pfad war bisher schlicht unbenutzt.
+//
+// Und weil der Wirtsprozess nichts vergisst (siehe porting-notes zu
+// 2011-0102): Jedes Initialize bekommt sein Exit, hier ueber
+// flutter_libnx_random_cleanup am Programmende.
+Mutex g_csrng_lock = {};
+bool g_csrng_ready = false;
+
+bool EnsureCsrng() {
+  mutexLock(&g_csrng_lock);
+  if (!g_csrng_ready && R_SUCCEEDED(csrngInitialize())) {
+    g_csrng_ready = true;
+  }
+  const bool ready = g_csrng_ready;
+  mutexUnlock(&g_csrng_lock);
+  return ready;
+}
+
+}  // namespace
+
 extern "C" {
 
 // POSIX begrenzt getentropy auf 256 Bytes je Aufruf. Die Grenze gilt hier
 // genauso, damit sich Aufrufer plattformübergreifend gleich verhalten.
 constexpr size_t kMaxEntropyPerCall = 256;
+
+void flutter_libnx_random_cleanup(void) {
+  mutexLock(&g_csrng_lock);
+  if (g_csrng_ready) {
+    csrngExit();
+    g_csrng_ready = false;
+  }
+  mutexUnlock(&g_csrng_lock);
+}
 
 int _getentropy_r(struct _reent* reent, void* buffer, size_t length) {
   if (length > kMaxEntropyPerCall) {
@@ -32,6 +65,10 @@ int _getentropy_r(struct _reent* reent, void* buffer, size_t length) {
   }
   if (buffer == nullptr) {
     reent->_errno = EFAULT;
+    return -1;
+  }
+  if (!EnsureCsrng()) {
+    reent->_errno = EIO;
     return -1;
   }
 
