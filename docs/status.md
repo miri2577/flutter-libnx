@@ -255,14 +255,32 @@ Logzeile auf der SD-Karte.
       erster Frame wird präsentiert, App läuft trotz fehlender Dienste
       weiter** – die leere Kanal-Antwort erzeugt saubere
       `MissingPluginException`s statt hängender awaits.
-- [ ] Arbeitsliste aus dem ersten Lauf, in Aufrufreihenfolge:
-      1. `shared_preferences.getAll` (Kanal
-         `plugins.flutter.io/shared_preferences`, StandardMethodCodec –
-         dafür braucht der Embedder erstmals den Binär-Codec)
-      2. `path_provider.getTemporaryDirectory` (blockiert `drift_flutter`
-         vor jedem sqlite3-Kontakt)
-      3. danach erst: `sqlite3` via FFI ohne dlopen (statisch aus
-         devkitPro-Portlibs + `DynamicLibrary.process()`)
+- [x] **StandardMessageCodec im Embedder** (2026-08-11):
+      `embedder/src/engine/standard_message_codec.cpp` – Teilmenge
+      null/bool/int/double/String/List/Map, typisierte Arrays lehnen
+      ehrlich ab. Damit sprechen die `plugins.flutter.io/*`-Kanäle.
+- [x] **`path_provider` und `shared_preferences` implementiert**
+      (`embedder/src/engine/plugins_horizon.cpp`): Pfade unter
+      `/switch/flutter_apps/<app-id>/` (werden angelegt), Preferences als
+      codec-kodierte Datei ebendort. Auf Hardware: beide Exceptions weg,
+      rezkonv lädt Einstellungen und kommt bis zur Datenbank.
+- [x] **Stille Plattformweiche in `Utils::*DynamicLibrary` beseitigt**
+      (Patch `patch_dart_platform_utils_dynlib`): Für Horizon griff in
+      Load/Resolve/Unload kein `#if`-Zweig – Durchfallen ohne `return`,
+      undefiniertes Verhalten, auf Hardware Data Abort (FAR=0x48) in
+      `DN_Ffi_dl_providesSymbol`, sobald `package:sqlite3` den Prozess
+      abfragte. Jetzt: Fehlertext + nullptr → saubere Dart-Exception.
+      **Auf Hardware: rezkonv bleibt offen und bedienbar**, die App zeigt
+      den DB-Fehler in ihrer eigenen Fehlerfläche an.
+- [ ] Nächstes Paket: sqlite3 statisch aus den devkitPro-Portlibs +
+      Symbolauflösung im Embedder (Haken in `Utils::LoadDynamicLibrary`/
+      `ResolveSymbolInDynamicLibrary` für eine registrierte Tabelle bzw.
+      dlsym-auf-sich-selbst über die eigene .dynsym), damit
+      `DynamicLibrary.open('libsqlite3.so')` trägt – der Fehlertext im
+      Patch kündigt es an.
+- [ ] Bekanntes Thema, noch unbeziffert: Software-Renderer „etwas
+      ruckelig" bei rezkonv (720p, ein Thread). Erst messen, dann
+      optimieren.
 - [ ] Referenz-Brocken bleibt Referenz-App/Referenz-App (dem privaten App-Repo;
       maßgeblicher Stand: `Desktop\Referenz-App-Arbeitsstand`) – nach Plan erst UI/
       Netzwerk, Video und WebView bleiben Forschungsprojekte

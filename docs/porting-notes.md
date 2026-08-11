@@ -6,6 +6,53 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-11 (Nacht, III) – Erste fremde App bedienbar; die vierte stille Weiche
+
+**rezkonv_app läuft auf der Konsole und bleibt bedienbar.** Suchleiste,
+Navigation, Einstellungen; die Datenbank fehlt noch und wird von der App
+selbst als Fehler angezeigt – mit unserem eigenen Text darin.
+
+Drei Stücke haben das möglich gemacht:
+
+1. **StandardMessageCodec** (`standard_message_codec.cpp`) – die
+   `plugins.flutter.io/*`-Kanäle sprechen das Binärformat, nicht JSON.
+   Umgesetzt ist die Teilmenge null/bool/int/double/String/List/Map;
+   typisierte Arrays lehnt der Decoder ehrlich ab. Zwei Formfallen:
+   dreistufige Größenkodierung (254/255-Marker) und double-Ausrichtung
+   auf 8 relativ zum Pufferanfang.
+2. **`path_provider` + `shared_preferences`** (`plugins_horizon.cpp`) –
+   Ablage unter `/switch/flutter_apps/<app-id>/`, absichtlich ohne
+   `sdmc:`-Präfix (POSIX-reiner Pfad übersteht die Pfadarithmetik des
+   Dart-path-Pakets; hbmenu startet mit sdmc als Standardgerät).
+   Preferences als codec-kodierte Datei: Drahtformat = Dateiformat,
+   kein eigener Parser, Ersetzen über Nebendatei + rename (FAT kann
+   nicht atomar; schlimmster Fall ist "beginnt leer").
+3. **Die vierte stille Plattformweiche**: In
+   `Utils::Load/Resolve/UnloadDynamicLibrary` (`platform/utils.cc`)
+   griff für Horizon **kein** `#if`-Zweig – Durchfallen ohne `return`,
+   undefiniertes Verhalten. Auf Hardware: Data Abort mit `FAR = 0x48`
+   in `DN_Ffi_dl_providesSymbol`, sobald `package:sqlite3` per
+   `providesSymbol` den Prozess abfragte; die App schloss sich nach dem
+   Startbildschirm. Der Absturzbericht plus `resolve-crash.sh` führte in
+   Minuten zur Zeile. Patch `patch_dart_platform_utils_dynlib`:
+   Fehlertext + nullptr. *Merksatz bestätigt: Bei jedem neuen
+   Plattform-#if in fremdem Code zuerst fragen, was im Nicht-Treffer-Fall
+   passiert.*
+
+**Spezifikation für das nächste Paket, wörtlich aus dem Log:**
+`package:sqlite3` ruft `DynamicLibrary.open('libsqlite3.so')`
+(`load_library.dart:60`). Der Weg: sqlite3 statisch aus den
+devkitPro-Portlibs linken und die dl-Funktionen für Horizon an eine
+Embedder-Tabelle (oder dlsym-auf-sich-selbst über die eigene .dynsym)
+anschließen – dann trägt derselbe Mechanismus jede statisch gelinkte
+C-Bibliothek für FFI.
+
+**Offen notiert:** Software-Renderer bei rezkonv "etwas ruckelig"
+(Nutzerurteil, 720p, ein Thread). Erst messen (Frame-Zeiten loggen),
+dann optimieren.
+
+---
+
 ## 2026-08-11 (Nacht, II) – Platform Channels
 
 **Auf Hardware bestätigt:** MethodChannel `flutter_libnx/system`, Dart fragt

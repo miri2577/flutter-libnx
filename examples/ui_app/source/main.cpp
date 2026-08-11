@@ -33,6 +33,11 @@ extern "C" void flutter_libnx_scan_heap(const char* label);
 extern "C" void flutter_libnx_heal_heap(void);
 extern "C" void flutter_libnx_fonts_cleanup(void);
 extern "C" void flutter_libnx_random_cleanup(void);
+// Aus plugins_horizon.cpp: path_provider und shared_preferences
+// (StandardMethodCodec). true = Kanal wurde dort beantwortet.
+extern "C" bool flutter_libnx_handle_plugin_message(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const FlutterPlatformMessage* message);
 
 namespace {
 
@@ -361,6 +366,12 @@ void PlatformMessageCallback(const FlutterPlatformMessage* message,
     }
     // Unbekannte Methode auf unserem Kanal: "nicht implementiert".
     respond(nullptr);
+    return;
+  }
+
+  // Die Plugin-Kanäle (StandardMethodCodec) wohnen im Embedder, nicht hier -
+  // sie gelten für jede App, nicht nur für dieses Beispiel.
+  if (flutter_libnx_handle_plugin_message(g_engine, message)) {
     return;
   }
 

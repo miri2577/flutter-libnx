@@ -2652,6 +2652,69 @@ def patch_dart_ffi_dynamic_library(src: str) -> None:
     )
 
 
+def patch_dart_platform_utils_dynlib(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "platform", "utils.cc")
+    # Fund vom 2026-08-11 (rezkonv_app): Fuer Horizon greift in den drei
+    # dl-Funktionen KEIN #if-Zweig - die Funktionen fallen ohne return durch,
+    # undefiniertes Verhalten. Auf Hardware: Data Abort mit FAR=0x48 in
+    # DN_Ffi_dl_providesSymbol, sobald package:sqlite3 per providesSymbol
+    # prueft, was der Prozess exportiert. Dieselbe Klasse stiller
+    # Plattformweichen wie MessageLoopImpl::Create() - nur dass der
+    # Fallthrough hier gar nichts liefert statt nullptr.
+    #
+    # Die ehrliche Antwort: Fehlertext setzen und nullptr liefern. Die
+    # Aufrufer (SymbolExists, Ffi_dl_open, Ffi_dl_close) unterscheiden nur
+    # "error gesetzt oder nicht" und machen daraus saubere Dart-Exceptions.
+    replace_once(
+        path,
+        "void* Utils::LoadDynamicLibrary(const char* library_path,\n"
+        "                                bool search_dll_load_dir,\n"
+        "                                char** error) {\n"
+        "  void* handle = nullptr;\n",
+        "void* Utils::LoadDynamicLibrary(const char* library_path,\n"
+        "                                bool search_dll_load_dir,\n"
+        "                                char** error) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  *error = strdup(\n"
+        "      \"Horizon has no runtime linker; dlopen is not available. \"\n"
+        "      \"Statically linked symbols may be offered by the embedder \"\n"
+        "      \"in a later revision.\");\n"
+        "  return nullptr;\n"
+        "#endif\n"
+        "  void* handle = nullptr;\n",
+        "dart platform/utils.cc (LoadDynamicLibrary ohne Fallthrough)",
+    )
+    replace_once(
+        path,
+        "void* Utils::ResolveSymbolInDynamicLibrary(void* library_handle,\n"
+        "                                           const char* symbol,\n"
+        "                                           char** error) {\n",
+        "void* Utils::ResolveSymbolInDynamicLibrary(void* library_handle,\n"
+        "                                           const char* symbol,\n"
+        "                                           char** error) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  *error = strdup(\n"
+        "      \"Symbol lookup by name is not available on Horizon: \"\n"
+        "      \"there is no runtime linker.\");\n"
+        "  return nullptr;\n"
+        "#endif\n",
+        "dart platform/utils.cc (ResolveSymbol ohne Fallthrough)",
+    )
+    replace_once(
+        path,
+        "void Utils::UnloadDynamicLibrary(void* library_handle, char** error) {\n"
+        "  bool ok = false;\n",
+        "void Utils::UnloadDynamicLibrary(void* library_handle, char** error) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  *error = strdup(\"No dynamic libraries on Horizon.\");\n"
+        "  return;\n"
+        "#endif\n"
+        "  bool ok = false;\n",
+        "dart platform/utils.cc (UnloadDynamicLibrary ohne Fallthrough)",
+    )
+
+
 def patch_tonic_build_config(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "tonic", "common",
                         "build_config.h")
@@ -3193,6 +3256,7 @@ def main() -> int:
     patch_dart_bin_thread(SRC)
     patch_dart_bin_native_assets(SRC)
     patch_dart_platform_utils(SRC)
+    patch_dart_platform_utils_dynlib(SRC)
     patch_dart_ffi_dynamic_library(SRC)
     patch_tonic_build_config(SRC)
     patch_absl_cctz(SRC)
