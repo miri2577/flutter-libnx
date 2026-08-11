@@ -38,9 +38,14 @@ extern "C" void flutter_libnx_random_cleanup(void);
 extern "C" bool flutter_libnx_handle_plugin_message(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const FlutterPlatformMessage* message);
-// DIAGNOSE: sqlite3-Rauchprobe auf C-Ebene (sqlite3_probe_horizon.cpp),
-// solange SQLITE_IOERR_CORRUPTFS aus dem Dart-Pfad ungeklaert ist.
+// DIAGNOSE: sqlite3-Rauchprobe auf C-Ebene (sqlite3_probe_horizon.cpp).
+// Der Fall (zwei devoptab-Fallen) ist geloest; der Aufruf unten bleibt
+// auskommentiert fuer die naechste Datei-I/O-Fehlersuche.
 extern "C" void flutter_libnx_sqlite3_probe(void);
+// Aus textinput_horizon.cpp: Bildschirmtastatur ueber das swkbd-Applet.
+extern "C" bool flutter_libnx_handle_textinput(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const FlutterPlatformMessage* message);
 
 namespace {
 
@@ -92,6 +97,32 @@ bool SoftwarePresent(void* user_data,
 
   g_platform->EndFrame();
   g_first_frame_presented = true;
+
+  // MESSUNG (Ruckeln): Frame-Abstaende, alle 600 Frames eine Zeile.
+  // Nutzerurteil war "etwas ruckelig" - erst beziffern, dann optimieren.
+  {
+    static uint64_t last_ns = 0;
+    static uint64_t sum_ns = 0;
+    static uint64_t worst_ns = 0;
+    static int count = 0;
+    const uint64_t now_ns = FlutterEngineGetCurrentTime();
+    if (last_ns != 0) {
+      const uint64_t delta = now_ns - last_ns;
+      sum_ns += delta;
+      if (delta > worst_ns) {
+        worst_ns = delta;
+      }
+      if (++count == 600) {
+        LOG_INFO("Frames: %.1f/s im Mittel, schlechtester Abstand %.0f ms",
+                 600.0 * 1e9 / static_cast<double>(sum_ns),
+                 static_cast<double>(worst_ns) / 1e6);
+        sum_ns = 0;
+        worst_ns = 0;
+        count = 0;
+      }
+    }
+    last_ns = now_ns;
+  }
   return true;
 }
 
@@ -372,6 +403,11 @@ void PlatformMessageCallback(const FlutterPlatformMessage* message,
     return;
   }
 
+  // Texteingabe: swkbd-Applet, siehe textinput_horizon.cpp.
+  if (flutter_libnx_handle_textinput(g_engine, message)) {
+    return;
+  }
+
   // Die Plugin-Kanäle (StandardMethodCodec) wohnen im Embedder, nicht hier -
   // sie gelten für jede App, nicht nur für dieses Beispiel.
   if (flutter_libnx_handle_plugin_message(g_engine, message)) {
@@ -464,7 +500,8 @@ int main(int argc, char* argv[]) {
   // oder dem Loader - beides laeuft vor main().
   flutter_libnx_scan_heap("Start");
 
-  flutter_libnx_sqlite3_probe();
+  // Bei Bedarf wieder einschalten (sqlite3-Rauchprobe, siehe oben):
+  // flutter_libnx_sqlite3_probe();
 
   const Result romfs_result = romfsInit();
   if (R_FAILED(romfs_result)) {

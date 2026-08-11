@@ -6,6 +6,38 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-11 (Nacht, V) – Texteingabe und Dateiauswahl: der volle App-Zyklus steht
+
+**Auf Hardware bestätigt: Rezept mit der Systemtastatur angelegt, in
+sqlite gespeichert, Neustart überlebt.** Eine unveränderte Flutter-App
+ist damit auf der Konsole voll benutzbar.
+
+**Bildschirmtastatur** (`textinput_horizon.cpp`): Der Kanal
+`flutter/textinput` spricht JSON, nicht den Standard-Codec. Drei Dinge,
+die man wissen muss:
+
+* `swkbdShow` blockiert die Hauptschleife - und damit die Engine. Das ist
+  richtig so: Das Applet übernimmt den Bildschirm komplett; die Antwort
+  auf `TextInput.show` geht deshalb VOR dem Öffnen raus.
+* Flutter zählt Auswahl-Indizes in **UTF-16-Einheiten**, swkbd liefert
+  UTF-8 - ohne Umrechnung steht der Cursor bei Umlauten/Emoji falsch.
+* Abbruch = nichts senden. Das Framework behält den alten Text, wie bei
+  einer weggewischten Handy-Tastatur.
+
+**`file_picker`** ohne Datei-Browser: Die Konvention
+`/switch/flutter_apps/<app-id>/import/` ersetzt die Ordnernavigation.
+Einzelauswahl liefert die neueste Datei ("wer gerade etwas auf die Karte
+kopiert hat, meint genau diese"), Mehrfachauswahl alle mit passender
+Endung, leerer Ordner "abgebrochen" (null). Antwortformat des
+MethodChannels: Liste von Maps {path, name, size, bytes: null,
+identifier: null}.
+
+Aufgeräumt: sqlite3-Rauchprobe stillgelegt (reaktivierbar), fstat-Diagnose
+entfernt, Frame-Messung eingebaut (Zeile alle 600 präsentierte Frames -
+feuert nur bei anhaltendem Zeichnen, im Ruhezustand rendert Flutter nicht).
+
+---
+
 ## 2026-08-11 (Nacht, IV) – sqlite3 läuft: FFI ohne dlopen, und zwei devoptab-Fallen
 
 **rezkonv_app läuft fehlerfrei mit Datenbank und FTS5-Volltextsuche.**

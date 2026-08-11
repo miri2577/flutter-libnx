@@ -575,13 +575,7 @@ int __wrap_fstat(int fd, struct stat* st) {
     errno = EBADF;
     return -1;
   }
-  const int rc = __real_fstat(fd, st);
-  // DIAGNOSE (SQLITE_IOERR_FSTAT 1802): Welcher fstat scheitert womit?
-  // Nach der Fehlersuche wieder ausbauen.
-  if (rc != 0) {
-    LOG_WARN("fstat(%d) scheitert: errno %d", fd, errno);
-  }
-  return rc;
+  return __real_fstat(fd, st);
 }
 
 }  // extern "C"

@@ -21,6 +21,7 @@
 // Alle Handler laufen auf dem Plattform-Thread (der Hauptschleife) - keine
 // Nebenläufigkeit, keine Sperren.
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -269,6 +270,141 @@ bool HandleSharedPreferences(FLUTTER_API_SYMBOL(FlutterEngine) engine,
   return false;
 }
 
+// --- file_picker ------------------------------------------------------------
+//
+// Einen Datei-Browser als eigene Vollbild-UI gibt es (noch) nicht. Die
+// Switch-Konvention lautet stattdessen: Dateien, die eine App importieren
+// soll, liegen in /switch/flutter_apps/<app-id>/import/ auf der SD-Karte.
+// Ein "Datei wählen" liefert den Inhalt dieses Ordners - bei
+// Einzelauswahl die neueste Datei, bei Mehrfachauswahl alle passenden.
+// Ist der Ordner leer, kommt null zurück, was file_picker als "abgebrochen"
+// versteht - die App zeigt dann ihren normalen Kein-Ergebnis-Weg.
+
+std::string ImportDir() {
+  return BaseDir() + "/import";
+}
+
+bool HasAllowedExtension(const std::string& name,
+                         const std::vector<std::string>& extensions) {
+  if (extensions.empty()) {
+    return true;
+  }
+  const size_t dot = name.rfind('.');
+  if (dot == std::string::npos) {
+    return false;
+  }
+  std::string ext = name.substr(dot + 1);
+  for (char& c : ext) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  for (const std::string& allowed : extensions) {
+    if (ext == allowed) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HandleFilePicker(FLUTTER_API_SYMBOL(FlutterEngine) engine,
+                      const FlutterPlatformMessage* message,
+                      const std::string& method,
+                      const StdValue& args) {
+  if (method == "clear") {
+    Respond(engine, message, EncodeStdSuccess(StdValue::Bool(true)));
+    return true;
+  }
+  EnsureDir(ImportDir());
+  if (method == "dir") {
+    Respond(engine, message, EncodeStdSuccess(StdValue::String(ImportDir())));
+    return true;
+  }
+
+  // any / custom / media / image / video / audio - alle laufen auf eine
+  // Dateiliste hinaus.
+  std::vector<std::string> extensions;
+  if (const StdValue* list = MapGet(args, "allowedExtensions")) {
+    for (const StdValue& item : list->as_list) {
+      if (item.type == StdValue::Type::kString) {
+        std::string ext = item.as_string;
+        for (char& c : ext) {
+          if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+          }
+        }
+        extensions.push_back(ext);
+      }
+    }
+  }
+  const StdValue* multi = MapGet(args, "allowMultipleSelection");
+  const bool allow_multiple =
+      multi != nullptr && multi->type == StdValue::Type::kBool &&
+      multi->as_bool;
+
+  struct Candidate {
+    std::string name;
+    int64_t size;
+    int64_t mtime;
+  };
+  std::vector<Candidate> found;
+
+  DIR* dir = opendir(ImportDir().c_str());
+  if (dir != nullptr) {
+    while (dirent* entry = readdir(dir)) {
+      const std::string name = entry->d_name;
+      if (name == "." || name == "..") {
+        continue;
+      }
+      if (!HasAllowedExtension(name, extensions)) {
+        continue;
+      }
+      struct stat st = {};
+      const std::string full = ImportDir() + "/" + name;
+      if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        continue;
+      }
+      found.push_back({name, static_cast<int64_t>(st.st_size),
+                       static_cast<int64_t>(st.st_mtime)});
+    }
+    closedir(dir);
+  }
+
+  if (found.empty()) {
+    LOG_INFO("file_picker: keine passenden Dateien in %s - dorthin kopieren",
+             ImportDir().c_str());
+    Respond(engine, message, EncodeStdSuccess(StdValue::Null()));
+    return true;
+  }
+
+  if (!allow_multiple) {
+    // Neueste Datei gewinnt - wer gerade etwas auf die Karte kopiert hat,
+    // meint genau diese.
+    size_t best = 0;
+    for (size_t i = 1; i < found.size(); i++) {
+      if (found[i].mtime > found[best].mtime) {
+        best = i;
+      }
+    }
+    found = {found[best]};
+  }
+
+  StdValue result = StdValue::List();
+  for (const Candidate& file : found) {
+    StdValue entry = StdValue::Map();
+    MapSet(&entry, "path", StdValue::String(ImportDir() + "/" + file.name));
+    MapSet(&entry, "name", StdValue::String(file.name));
+    MapSet(&entry, "size", StdValue::Int(file.size));
+    MapSet(&entry, "bytes", StdValue::Null());
+    MapSet(&entry, "identifier", StdValue::Null());
+    result.as_list.push_back(std::move(entry));
+    LOG_INFO("file_picker: liefere %s (%lld Bytes)", file.name.c_str(),
+             static_cast<long long>(file.size));
+  }
+  Respond(engine, message, EncodeStdSuccess(result));
+  return true;
+}
+
 }  // namespace
 
 // Behandelt die Plugin-Kanäle. true heißt: beantwortet (oder bewusst der
@@ -280,7 +416,9 @@ extern "C" bool flutter_libnx_handle_plugin_message(
       strcmp(message->channel, "plugins.flutter.io/path_provider") == 0;
   const bool is_shared_preferences =
       strcmp(message->channel, "plugins.flutter.io/shared_preferences") == 0;
-  if (!is_path_provider && !is_shared_preferences) {
+  const bool is_file_picker =
+      strcmp(message->channel, "miguelruivo.flutter.plugins.filepicker") == 0;
+  if (!is_path_provider && !is_shared_preferences && !is_file_picker) {
     return false;
   }
 
@@ -295,6 +433,9 @@ extern "C" bool flutter_libnx_handle_plugin_message(
 
   if (is_path_provider) {
     return HandlePathProvider(engine, message, method);
+  }
+  if (is_file_picker) {
+    return HandleFilePicker(engine, message, method, args);
   }
   return HandleSharedPreferences(engine, message, method, args);
 }

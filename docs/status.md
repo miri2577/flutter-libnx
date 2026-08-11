@@ -296,17 +296,26 @@ Logzeile auf der SD-Karte.
       * C-Rauchprobe `sqlite3_probe_horizon.cpp` (open→CREATE→INSERT→
         SELECT=42) läuft bei jedem Start – nach der Stabilisierung
         hinter ein Flag legen oder ausbauen
-- [ ] **Bildschirmtastatur** – ohne sie keine Texteingabe (Rezept anlegen
-      geht nur per Touch-Tastatur, die es nicht gibt). Weg: swkbd-Applet
-      der Konsole an den Kanal `flutter/textinput` (JSON-Codec) anbinden:
-      `TextInput.show` → `swkbdShow` (blockierend) → Ergebnis als
-      `TextInputClient.updateEditingState` zurück.
-- [ ] `file_picker` für den Rezept-Import (Ordnernavigation) – braucht
-      einen kleinen SD-Browser oder feste Import-Verzeichnisse.
-- [ ] Bekanntes Thema, noch unbeziffert: Software-Renderer „etwas
-      ruckelig" (720p, ein Thread). Erst messen, dann optimieren.
+- [x] **Bildschirmtastatur – auf Hardware bestätigt** (2026-08-11 Nacht):
+      `textinput_horizon.cpp` bedient `flutter/textinput` (JSON-Codec);
+      `TextInput.show` öffnet das swkbd-Systemapplet (blockierend, das
+      Applet übernimmt den Bildschirm ohnehin), Bestätigen geht als
+      `TextInputClient.updateEditingState` + `performAction` zurück.
+      Auswahl-Indizes in UTF-16-Einheiten (Flutter zählt so, swkbd
+      liefert UTF-8). **Rezept wurde damit angelegt, gespeichert und hat
+      den Neustart überlebt – der volle App-Zyklus funktioniert.**
+- [x] **`file_picker`** – Switch-Konvention statt Datei-Browser: „Datei
+      wählen" liefert den Inhalt von
+      `/switch/flutter_apps/<app-id>/import/` (Einzelauswahl: neueste
+      Datei; Mehrfach: alle passenden; leer: null = abgebrochen).
+      Noch nicht auf Hardware geprüft (braucht eine Importdatei auf SD).
+- [ ] Frame-Messung eingebaut (600-Frame-Fenster in `SoftwarePresent`),
+      liefert aber erst bei anhaltendem Zeichnen (Scrollen/Animation)
+      eine Zeile – Zahlen stehen noch aus.
 - [ ] rezkonv-Rest: `LateInitializationError` eines App-Singletons
       (hängt mutmaßlich am Secure-Storage-Stub) – beobachten.
+- [ ] sqlite3-Rauchprobe ist stillgelegt (Aufruf auskommentiert in
+      `main.cpp`), bleibt für künftige Datei-I/O-Fehlersuchen reaktivierbar.
 - [ ] Referenz-Brocken bleibt Referenz-App/Referenz-App (dem privaten App-Repo;
       maßgeblicher Stand: `Desktop\Referenz-App-Arbeitsstand`) – nach Plan erst UI/
       Netzwerk, Video und WebView bleiben Forschungsprojekte
