@@ -248,11 +248,21 @@ Logzeile auf der SD-Karte.
       des Projekts) → `rebuild-all.sh` → NRO. Auf Hardware bestätigt,
       Touch und Controller wirken. Damit ist der Bauweg projektunabhängig
       belegt, nicht nur am eigenen Beispiel.
-- [ ] Erste echte fremde App: `rezkonv_app` (Kochbuch, miri2577) –
-      Sondierung durch Bundle-/Kernel-Stufe steht aus. Erwartete Brocken:
-      `drift`/`sqlite3_flutter_libs` (FFI ohne dlopen → sqlite3 statisch
-      aus devkitPro-Portlibs + `DynamicLibrary.process()`), Gruppe-B-Stubs
-      (`path_provider`, `shared_preferences`, `file_picker`, …).
+- [x] **Erste echte fremde App gebaut und gestartet: `rezkonv_app`**
+      (Kochbuch, miri2577; 2026-08-11): Unverändert durch die ganze Kette
+      (41-MB-Dill, 2,24 Mio. Zeilen Assembly, 36-MB-NRO, null offene
+      Symbole – auch `dart:ffi` linkt). **Auf Hardware: Engine startet,
+      erster Frame wird präsentiert, App läuft trotz fehlender Dienste
+      weiter** – die leere Kanal-Antwort erzeugt saubere
+      `MissingPluginException`s statt hängender awaits.
+- [ ] Arbeitsliste aus dem ersten Lauf, in Aufrufreihenfolge:
+      1. `shared_preferences.getAll` (Kanal
+         `plugins.flutter.io/shared_preferences`, StandardMethodCodec –
+         dafür braucht der Embedder erstmals den Binär-Codec)
+      2. `path_provider.getTemporaryDirectory` (blockiert `drift_flutter`
+         vor jedem sqlite3-Kontakt)
+      3. danach erst: `sqlite3` via FFI ohne dlopen (statisch aus
+         devkitPro-Portlibs + `DynamicLibrary.process()`)
 - [ ] Referenz-Brocken bleibt Referenz-App/Referenz-App (dem privaten App-Repo;
       maßgeblicher Stand: `Desktop\Referenz-App-Arbeitsstand`) – nach Plan erst UI/
       Netzwerk, Video und WebView bleiben Forschungsprojekte
