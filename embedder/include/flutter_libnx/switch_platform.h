@@ -15,6 +15,22 @@ namespace flutter_libnx {
 inline constexpr uint32_t kDefaultWidth = 1280;
 inline constexpr uint32_t kDefaultHeight = 720;
 
+// Ein Berührungspunkt, bereits auf das umgerechnet, was ein Embedder braucht.
+//
+// Bewusst ohne libnx-Typen: Der Aufrufer soll daraus Flutter-Ereignisse bauen,
+// ohne `<switch.h>` einzubinden – dieselbe Trennung wie bei Schriften und
+// Stackgrenzen.
+struct TouchPoint {
+  int32_t id = 0;  // Fingerkennung; bleibt über die Dauer einer Berührung gleich
+  double x = 0.0;
+  double y = 0.0;
+};
+
+// Mehr als so viele gleichzeitige Berührungen wertet die Plattformschicht
+// nicht aus. Die Hardware meldet bis zu 16; für eine Anwendungsoberfläche sind
+// zwei bereits die Ausnahme.
+inline constexpr int kMaxTouchPoints = 8;
+
 class SwitchPlatform {
  public:
   SwitchPlatform() = default;
@@ -46,9 +62,16 @@ class SwitchPlatform {
 
   const PadState& pad() const { return pad_; }
 
+  // Berührungspunkte des zuletzt gelesenen Zustands. Gültig bis zum nächsten
+  // PollEvents().
+  const TouchPoint* touches() const { return touches_; }
+  int touch_count() const { return touch_count_; }
+
  private:
   Framebuffer framebuffer_{};
   PadState pad_{};
+  TouchPoint touches_[kMaxTouchPoints]{};
+  int touch_count_ = 0;
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   bool initialized_ = false;

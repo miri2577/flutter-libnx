@@ -69,26 +69,25 @@ void OS::Sleep(int64_t millis) {
   nanosleep(&req, nullptr);
 }
 
-// DEBUG-INSTRUMENTIERUNG (flutter-libnx): Dart-VM-Ausgaben landen sonst nur auf
-// stdout/stderr und sind auf echter Hardware unsichtbar (nxlink -s scheitert an
-// Docker-NAT). Damit VM-Meldungen - insbesondere ein FATAL direkt vor abort() -
-// sichtbar werden, hier zusaetzlich in eine eigene Datei auf der SD schreiben.
-// Pro Aufruf oeffnen/schliessen: langsam, aber garantiert auf die Karte
-// geflusht, bevor die VM den Prozess beendet. Bewusst eine SEPARATE Datei
-// (nicht ui_app.log), um den offenen FILE*-Handle des App-Loggers nicht zu
-// stoeren. Nach dem Debuggen wieder entfernen.
+// Ausgaben der Dart-VM landen sonst nur auf stdout und stderr, und beide gehen
+// auf der Konsole ins Leere (`nxlink -s` scheitert an der Docker-NAT). Deshalb
+// zusaetzlich durch eine schwach gebundene Funktion, die der Embedder stellt -
+// dieselbe Senke wie fuer Syslog und FML_LOG. Bleibt der Embedder stumm, ist
+// der Zeiger null und es passiert schlicht nichts.
 //
-// Zweiter Weg neben der Datei: eine schwach gebundene Funktion, die der
-// Embedder bereitstellt. Damit gehen die Meldungen durch dieselbe TCP-Senke
-// wie alles andere und sind sofort am Entwicklungsrechner zu sehen, ohne die
-// Karte aus- und einzubauen. Bleibt der Embedder stumm, ist der Zeiger null
-// und es passiert schlicht nichts.
+// Das ist kein Wegwerf-Code: Ohne diesen Weg ist jede VM-Meldung auf der
+// Zielplattform unsichtbar. Waehrend der Fehlersuche schrieb dieselbe Stelle
+// zusaetzlich in eine Datei auf der SD-Karte, mit oeffnen und schliessen je
+// Zeile. Das war fuer einen stummen Absturz das richtige Mittel und ist fuer
+// den Normalbetrieb zu teuer - die TCP-Senke leistet dasselbe, ohne die Karte
+// zu belasten.
 extern "C" __attribute__((weak)) void flutter_libnx_vm_log(const char* text);
 
 namespace {
 void VmDebugFileV(const char* format, va_list args) {
-  // Erst formatieren, dann beide Wege bedienen: Eine va_list laesst sich nicht
-  // zweimal auswerten.
+  if (flutter_libnx_vm_log == nullptr) {
+    return;
+  }
   char buffer[1024];
   va_list copy;
   va_copy(copy, args);
@@ -97,18 +96,7 @@ void VmDebugFileV(const char* format, va_list args) {
   if (written < 0) {
     return;
   }
-
-  if (flutter_libnx_vm_log != nullptr) {
-    flutter_libnx_vm_log(buffer);
-  }
-
-  FILE* f = fopen("sdmc:/switch/flutter-libnx/vm_debug.log", "a");
-  if (f == nullptr) {
-    return;
-  }
-  fputs(buffer, f);
-  fflush(f);
-  fclose(f);
+  flutter_libnx_vm_log(buffer);
 }
 }  // namespace
 

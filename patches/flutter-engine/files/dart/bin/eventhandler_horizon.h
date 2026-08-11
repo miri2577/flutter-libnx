@@ -17,8 +17,20 @@
 //     aus der Maske, bis Tokens zurückkommen – der Deskriptor fällt damit von
 //     selbst aus der nächsten Liste heraus.
 //
-// Der Weckmechanismus ist ein Socket-Paar statt einer Pipe: libnx definiert
-// `socketpair`, aber kein `pipe`.
+// Der Weckmechanismus hat zwei Fassungen, und welche greift, entscheidet die
+// Hardware:
+//
+//   * Bevorzugt ein über 127.0.0.1 selbst geknüpftes TCP-Paar. Es leistet
+//     dasselbe wie die Pipe der Linux-Fassung – ein Deskriptor, auf den `poll`
+//     wartet und den ein anderer Thread beschreibt.
+//   * Andernfalls gar kein Weckdeskriptor: Die Nachrichten laufen dann über ein
+//     mutex-geschütztes Fach, und `poll` bekommt eine Obergrenze fürs
+//     Zeitlimit, damit sie zeitnah gesehen werden.
+//
+// `socketpair` ist ausdrücklich kein Weg. libnx definiert es zwar, aber nur
+// pro forma: `socket.c:812` setzt `ENOSYS` und gibt -1 zurück, mit dem
+// Kommentar „Unimplementable". Dass ein Symbol in `libnx.a` steht, sagt hier
+// nichts über seine Brauchbarkeit.
 
 #ifndef RUNTIME_BIN_EVENTHANDLER_HORIZON_H_
 #define RUNTIME_BIN_EVENTHANDLER_HORIZON_H_
@@ -32,6 +44,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <vector>
+
+#include "bin/lockers.h"
 #include "platform/hashmap.h"
 
 namespace dart {
@@ -92,15 +107,27 @@ class EventHandlerImplementation {
  private:
   static void Poll(uword args);
   void HandleInterruptFd();
+  void HandleInterruptQueue();
+  void ProcessInterruptMessage(const InterruptMessage& msg);
   void WakeupHandler(intptr_t id, Dart_Port dart_port, int64_t data);
   intptr_t GetPollEvents(intptr_t events, DescriptorInfo* di);
   static void* GetHashmapKeyFromFd(intptr_t fd);
   static uint32_t GetHashmapHashFromFd(intptr_t fd);
 
+  // Knüpft ein verbundenes TCP-Paar über 127.0.0.1. Gelingt das nicht, bleibt
+  // es beim Fach unten.
+  static bool CreateLoopbackPair(int fds[2]);
+
+  bool has_interrupt_fds() const { return interrupt_fds_[0] >= 0; }
+
   SimpleHashMap socket_map_;
   TimeoutQueue timeout_queue_;
   bool shutdown_;
   int interrupt_fds_[2];
+
+  // Nur benutzt, wenn kein Weckdeskriptor zustande kam.
+  Mutex queue_mutex_;
+  std::vector<InterruptMessage> pending_messages_;
 
   DISALLOW_COPY_AND_ASSIGN(EventHandlerImplementation);
 };

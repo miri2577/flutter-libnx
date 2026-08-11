@@ -14,6 +14,7 @@
 #include <pthread.h>
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
@@ -21,7 +22,22 @@
 #include "platform/utils.h"
 #include "vm/os_thread.h"
 
+// Vom Embedder gestellt, damit <switch.h> nicht in die Dart-VM gerät. Fehlt
+// die Datei – etwa in einem Testprogramm, das nur die VM linkt –, ist der
+// Zeiger null und der Notnagel unten greift.
+extern "C" __attribute__((weak)) bool flutter_libnx_get_stack_bounds(
+    uintptr_t* lower,
+    uintptr_t* upper);
+
+// Dieselbe Senke, über die os_horizon.cc bereits OS::Print bedient.
+extern "C" __attribute__((weak)) void flutter_libnx_vm_log(const char* text);
+
 namespace dart {
+
+// Ohne Auskunft des Kernels angenommene Stackgröße. Deutlich kleiner als die
+// tatsächlichen Thread-Stacks (siehe GetMaxStackSize), damit die Schätzung
+// innerhalb des echten Bereichs bleibt.
+static const uword kFallbackStackSize = 256 * KB;
 
 #define VALIDATE_PTHREAD_RESULT(result)                                        \
   if (result != 0) {                                                           \
@@ -155,16 +171,40 @@ intptr_t OSThread::ThreadIdToIntPtr(ThreadId id) {
 }
 
 bool OSThread::GetCurrentStackBounds(uword* lower, uword* upper) {
-  // OFFENE LÜCKE, bewusst nicht geraten.
+  // Linux ermittelt die Grenzen über pthread_getattr_np; newlib bietet das
+  // nicht. Der Kernel weiß es trotzdem: svcQueryMemory liefert zu einer
+  // Adresse die umgebende Speicherregion, und für Haupt- wie Nebenthreads ist
+  // das genau der Stack. Der Aufruf liegt im Embedder
+  // (embedder/src/platform/stack_bounds_horizon.cpp), weil <switch.h> hier
+  // nicht hineindarf – dasselbe Vorgehen wie bei der Logsenke.
   //
-  // Linux ermittelt die Stackgrenzen über pthread_getattr_np; newlib bietet
-  // das nicht. libnx kennt die Grenzen zwar in seiner Thread-Struktur, aber
-  // der Zugriff darauf würde <switch.h> in die Dart-VM ziehen.
-  //
-  // Die VM wertet false als "unbekannt" aus. Das betrifft die Erkennung von
-  // Stapelüberläufen: Ohne Grenzen fällt sie auf konservativere Verfahren
-  // zurück. Sollte sich das als Problem zeigen, ist das die Stelle.
-  return false;
+  // Ein Rückgabewert false ist kein weicher Rückfall: os_thread.cc macht
+  // daraus FATAL("Failed to retrieve stack bounds"). Deshalb gibt es unten
+  // einen Notnagel statt eines Abbruchs.
+  if (flutter_libnx_get_stack_bounds != nullptr) {
+    uintptr_t region_lower = 0;
+    uintptr_t region_upper = 0;
+    if (flutter_libnx_get_stack_bounds(&region_lower, &region_upper)) {
+      *lower = static_cast<uword>(region_lower);
+      *upper = static_cast<uword>(region_upper);
+      return true;
+    }
+  }
+
+  // Notnagel. Er rät, und zwar bewusst in die sichere Richtung: Eine zu hoch
+  // angesetzte Untergrenze lässt die VM einen Stapelüberlauf zu früh melden –
+  // als kontrollierte Dart-Ausnahme. Eine zu niedrige würde ihn übersehen und
+  // in einem echten Speicherzugriffsfehler enden.
+  if (flutter_libnx_vm_log != nullptr) {
+    flutter_libnx_vm_log(
+        "OSThread::GetCurrentStackBounds: svcQueryMemory nicht verfuegbar, "
+        "konservative Schaetzung wird benutzt\n");
+  }
+  const uword sp = GetCurrentStackPointer();
+  const uword top = Utils::RoundUp(sp + 1, 4096);
+  *upper = top;
+  *lower = top - kFallbackStackSize;
+  return true;
 }
 
 // GetCurrentStackPointer() steht bereits in os_thread.cc und ist

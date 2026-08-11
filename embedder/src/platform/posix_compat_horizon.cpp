@@ -403,8 +403,14 @@ ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
 }
 
 int pipe(int fds[2]) {
-  // Horizon kennt keine Pipes, wohl aber Socketpaare. Der Eventhandler von
-  // dart:io nutzt denselben Ersatz, siehe eventhandler_horizon.cc.
+  // Horizon kennt keine Pipes – und auch kein Socketpaar als Ersatz: libnx
+  // definiert `socketpair` nur pro forma und meldet ENOSYS
+  // (nx/source/runtime/devices/socket.c:812, „Unimplementable"). Der Aufruf
+  // bleibt trotzdem stehen, weil er genau diesen Fehler weiterreicht; ein
+  // eigenes ENOSYS wäre dieselbe Antwort mit mehr Zeilen.
+  //
+  // Wer einen Weckkanal braucht, findet den Weg in eventhandler_horizon.cc:
+  // ein selbst geknüpftes TCP-Paar über 127.0.0.1.
   return ::socketpair(AF_UNIX, SOCK_STREAM, 0, fds);
 }
 

@@ -21,6 +21,22 @@ bool SwitchPlatform::Initialize(uint32_t width, uint32_t height) {
   padConfigureInput(1, HidNpadStyleSet_NpadStandard);
   padInitializeDefault(&pad_);
 
+  // Vorzustand einlesen, bevor irgendjemand Tastendrücke auswertet.
+  //
+  // Ein frisch angelegter PadState hat `buttons_old == 0`. Ist beim ersten
+  // padUpdate eine Taste noch physisch gedrückt – und aus dem hbmenu heraus
+  // ist das regelmäßig A –, meldet padGetButtonsDown sie als *neuen* Druck.
+  // Beim Diagnoseschirm von hello_libnx hat das den Schirm sofort wieder
+  // geschlossen; sobald A als Enter an Flutter geht, würde es hier den ersten
+  // fokussierten Knopf auslösen, ohne dass jemand ihn gedrückt hat.
+  padUpdate(&pad_);
+
+  // Der Touchscreen ist im Dock-Betrieb wirkungslos, im Handheld-Betrieb aber
+  // die naheliegendste Bedienung für eine Oberfläche, die für Berührung
+  // entworfen wurde. Er meldet dieselben Koordinaten wie der Framebuffer
+  // (1280x720), eine Umrechnung entfällt.
+  hidInitializeTouchScreen();
+
   NWindow* window = nwindowGetDefault();
   if (window == nullptr) {
     LOG_ERROR("nwindowGetDefault() lieferte nullptr");
@@ -82,6 +98,22 @@ void SwitchPlatform::PollEvents() {
   // appletMainLoop() liefert false, sobald Horizon das Beenden anfordert.
   applet_running_ = appletMainLoop();
   padUpdate(&pad_);
+
+  // Berührungen einlesen. hidGetTouchScreenStates liefert die jüngsten
+  // Zustände; einer genügt, weil wir ohnehin jeden Frame abfragen.
+  touch_count_ = 0;
+  HidTouchScreenState state = {};
+  if (hidGetTouchScreenStates(&state, 1) > 0) {
+    const int count = static_cast<int>(state.count) < kMaxTouchPoints
+                          ? static_cast<int>(state.count)
+                          : kMaxTouchPoints;
+    for (int i = 0; i < count; i++) {
+      touches_[i].id = static_cast<int32_t>(state.touches[i].finger_id);
+      touches_[i].x = static_cast<double>(state.touches[i].x);
+      touches_[i].y = static_cast<double>(state.touches[i].y);
+    }
+    touch_count_ = count;
+  }
 }
 
 uint8_t* SwitchPlatform::BeginFrame(uint32_t* out_stride) {

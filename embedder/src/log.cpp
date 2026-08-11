@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <string>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>

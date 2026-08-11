@@ -34,8 +34,13 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 - [x] **sauberes Beenden über Plus**
 - [x] **Framebuffer-Stride gemessen: 5120 Bytes = `1280 * 4`** – Flutters Puffer kann
       direkt durchgereicht werden, kein zeilenweises Umkopieren nötig
-- [x] **Prozessspeicher gemessen: 3007 MB gesamt, 243 MB belegt** – und zwar im
-      *Applet-Modus*, siehe `docs/hardware-target.md`
+- [x] **Prozessspeicher gemessen** – siehe `docs/hardware-target.md`.
+      **Korrigiert am 2026-08-11:** Die hier ursprünglich vermerkten „3007 MB
+      im Applet-Modus" stimmen nicht. Gemessen vor `FlutterEngineInitialize`:
+      Applet-Modus **380 MB**, Anwendungsmodus (hbmenu über ein Spiel mit
+      gehaltener R-Taste) **3189 MB**. Der Unterschied ist der Grund, warum das
+      Framework im Applet-Modus an `pthread_create` scheitert – jeder
+      Engine-Thread will 2 MB Stack.
 - [x] **Logging liefert Ausgabe am Entwicklungsrechner** – über eine TCP-Senke, bei der
       die Switch die Verbindung aufbaut (`scripts/log-listener.ps1`). `nxlink -s`
       scheitert an Docker-NAT, siehe `docs/porting-notes.md`.
@@ -136,40 +141,209 @@ Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
       `SkFontMgr_New_Custom_Empty`, `absl::…::LowLevelAlloc::Alloc`,
       `dart::Dart::Init`, `fml::MessageLoopHorizon::Run` und
       `dart::bin::root_certificates_pem_length`
-- [ ] `FlutterEngineRunInitialized` auf Hardware – Upload braucht ein
-      geöffnetes hbmenu auf der Konsole
+- [x] **`FlutterEngineRunInitialized` läuft an** – die Startsequenz kommt bis in
+      `EventHandler::Start`; Stackgrenzen, Meldeweg und Weckkanal stehen
+      (siehe „Stand der Fehlersuche")
 
-## Danach
+## Meilenstein 3 – Die Engine läuft
 
-- [ ] Dart AOT lädt
-- [ ] Flutter Engine startet
-- [ ] erster Frame
-- [ ] Touch
-- [ ] Controller
+**Stand 2026-08-11, im aufgeräumten Baum ohne Debug-Marken bestätigt:** Start,
+Frames mit Text, sechs Systemschriften, sauberer Abbau. Keine Instrumentierung
+mehr im Weg – insbesondere kein TCP-Log je Heap-Allokation und keine Datei je
+Logzeile auf der SD-Karte.
+
+- [x] **`gen_snapshot` aus dem eigenen Checkout gebaut** – 463 Ziele,
+      `clang_x64/gen_snapshot_product`, 6,6 MB x86-64-Linux. Der Umweg über die
+      Android-Artefakte des SDK trägt nicht mehr, Begründung unten.
+- [x] **AOT-Snapshot damit erzeugt** – 3,1 MB, 150.948 Zeilen Assembly
+- [x] **`Dart_Initialize` läuft durch** – Versionsprüfung ok, Merkmale
+      `… arm64 horizon no-compressed-pointers`
+- [x] **Dart AOT lädt**
+- [x] **Flutter Engine startet** – `FlutterEngineRunInitialized` = `kSuccess`,
+      `SendWindowMetricsEvent` = `kSuccess`, Heap wächst im laufenden Betrieb
+- [x] **erster Frame** – der wandernde Balken aus `examples/ui_app/dart/main.dart`
+      läuft über den Bildschirm der Konsole. Damit steht die ganze Kette:
+      Isolate, `dart:ui`, `PlatformDispatcher`, Szene, Software-Renderer,
+      Framebuffer.
+- [x] **Text im Bild** – Systemschriften der Konsole über den Dienst `pl:u`,
+      eingehängt als `SkFontMgr_New_Custom_Data`. Alle sechs Schnitte
+      (Standard, CJK, Koreanisch, Nintendo-Sonderzeichen) werden geladen.
+- [x] **sauberes Beenden** – `project.shutdown_dart_vm_when_done = true`.
+      Ohne das Feld bleibt `settings.leak_vm` auf seinem Vorgabewert `true`
+      (`common/settings.h:278`, ausgewertet in `embedder.cc:2079`): Die Shell
+      wird abgebaut, die Dart-VM aber absichtlich stehen gelassen. Dann läuft
+      `Dart_Cleanup` nie und damit auch nicht `EventHandler::Stop()`, dessen
+      Poll-Thread still in `poll()` auf dem Weckkanal wartet.
+      Ohne das Feld bleibt `settings.leak_vm` auf seinem Vorgabewert `true`
+      (`common/settings.h:278`, ausgewertet in `embedder.cc:2079`): Die Shell
+      wird abgebaut, die Dart-VM aber absichtlich stehen gelassen. Dann läuft
+      `Dart_Cleanup` nie und damit auch nicht `EventHandler::Stop()`, dessen
+      Poll-Thread still in `poll()` auf dem Weckkanal wartet.
+- [x] **Controller-Eingabe wirkt – auf Hardware bestätigt** (2026-08-11):
+      Steuerkreuz, linker Stick und A bewegen den Fokus und drücken den
+      Knopf. Es lagen zwei Ursachen hintereinander, beide waren stumme
+      Verwerfungen: Das View-Fokus-Ereignis wurde zu früh gesendet
+      (`runtime_controller.cc:216` verwirft ohne Isolate kommentarlos, der
+      Aufruf meldet trotzdem `kSuccess` – jetzt gesendet nach dem ersten
+      präsentierten Frame), und reine KeyData-Ereignisse stellt das
+      Framework in eine Warteschlange, die erst eine Rohnachricht auf
+      `flutter/keyevent` leeren würde (`hardware_keyboard.dart:1088`) –
+      gelöst über den Sofort-Dispatch-Pfad für synthetische Ereignisse.
+      `handled` in der Rückmeldung ist seitdem prinzipbedingt immer 0 und
+      **kein** Diagnosesignal mehr. Einzelheiten in `docs/porting-notes.md`.
+- [x] **Sporadischer Absturz (`_malloc_r` / `threadCreate 0xd401`) behoben**
+      (2026-08-11): Die NRO erbt den Heap des Wirtsprozesses samt
+      Kernel-Seitenzuständen. Nach einem *erfolgreichen* Lauf bleiben per
+      `svcMapMemory` „geliehene" Regionen (Stacks abgelöster Threads, die
+      libnx nicht mehr abräumt) im Heap zurück; der nächste Start im selben
+      Prozess hielt diese unlesbaren Löcher für freien Speicher. Freilisten-
+      Kette hinein → Data Abort in `_malloc_r` (`FAR = X3+8`); `memalign`
+      reicht ein Loch an `threadCreate` weiter →
+      `KernelError_InvalidMemoryState` (0xd401). Ein Absturz riss den
+      Prozess mit, der Folgelauf startete sauber – daher „jeder zweite
+      Start". **Reparatur: Erbschaftsbereinigung beim Start**
+      (`flutter_libnx_heal_heap` in `thread_diag_horizon.cpp`): geerbte
+      Löcher werden über `svcUnmapMemory`-Paarung mit größengleichen
+      Spiegeln zurückgebaut; der eigene Main-Stack ist ausgenommen, falsche
+      Paarungen lehnt der Kernel ab. Auf Hardware bestätigt über drei
+      Zyklen im selben Prozess (Erfolg → Bereinigung → Erfolg → …), wo
+      vorher jeder zweite Lauf starb.
+- [x] **Systemabsturz nach dem dritten Zyklus behoben** (2026-08-11):
+      Fehlerbild 2011-0102 (HIPC, „out of sessions") *nach* sauberem
+      App-Abgang, reproduzierbar beim jeweils dritten Lauf im selben
+      Prozess, in zwei unabhängigen Sitzungen. Ursache: Service-Sessions
+      überleben den NRO-Wechsel wie die Heap-Zustände – jeder Lauf ließ
+      eine pl:u-Session (`plInitialize` ohne `plExit`, samt gemappter
+      Shared-Font-Memory) und das romfs-Storage-Handle zurück, bis das
+      Session-Limit erschöpft war und der hbmenu-Reload starb. Reparatur:
+      `flutter_libnx_fonts_cleanup()` (plExit) und `romfsExit()` nach dem
+      Engine-Shutdown. **Auf Hardware bestätigt: vier Zyklen im selben
+      Prozess sauber durchlaufen und beendet** – vorher starb der Prozess
+      deterministisch nach dem dritten.
+- [x] **`runApp()` mit dem Flutter-Framework** – `MaterialApp`, `Scaffold`,
+      `ThemeData`/`ColorScheme`, `AnimationController` am Ticker, `Icons`
+      (Icon-Schriftart), `LinearProgressIndicator`, `Card`. Damit läuft der
+      vollständige Stapel, nicht mehr nur `dart:ui`.
+- [x] **Touch** – Berührungen des Touchscreens werden als
+      `FlutterPointerEvent` zugestellt; ein `FilledButton` reagiert und zählt
+      hoch. Zustandsverfolgung in `examples/ui_app/source/main.cpp`
+      (`SendTouchEvents`), Auslesen in `switch_platform.cpp`.
+- [x] Controller – siehe „Controller-Eingabe wirkt" oben
 - [ ] Platform Channels
 
-## Stand der Fehlersuche (2026-08-10)
+## Fehlersuche vom 2026-08-10 – abgeschlossen
 
-Der Absturz sitzt in `FlutterEngineRunInitialized`. Zwei Läufe mit
-Instrumentierung haben ihn eingegrenzt:
+**Ergebnis vorweg:** Vier Ursachen lagen hintereinander, jede verdeckte die
+nächste. Am Ende lief die Engine. Der Weg dorthin ist unten der Reihe nach
+festgehalten, weil drei der vier Befunde dasselbe Muster haben – *ein
+Meldeweg, der nicht angeschlossen war*.
+
+Der Absturz saß in `FlutterEngineRunInitialized`. Zwei Läufe mit
+Instrumentierung haben ihn zunächst eingegrenzt:
 
 - **Die Dart-VM gibt keine eigene Meldung aus.** `OS::Print`/`OS::PrintErr`
-  gehen jetzt über eine schwach gebundene Funktion an die TCP-Senke; es kommt
-  nichts. Die VM stirbt also, bevor sie etwas zu melden hat – ein harter
-  Speicherzugriffsfehler, kein kontrollierter Abbruch. Der Fatal-Screen der
-  Konsole bestätigt das (`2168-0002`, Data Abort).
+  gehen über eine schwach gebundene Funktion an die TCP-Senke; es kommt
+  nichts. Der Fatal-Screen der Konsole zeigt `2168-0002`, Data Abort.
 - **`VirtualMemory::AllocateAligned` wird nie erreicht.** Auch dort meldet
   jeder Aufruf Name, Größe, Ausrichtung und Flags – keine einzige Zeile
   kommt an. Der Absturz liegt damit *vor* der ersten Heap-Anforderung.
 
 Kein Deadlock: Die Konsole schließt die Verbindung, statt sie offen zu halten.
 
-**Nächster Verdächtiger:** `GetCurrentStackBounds` in `os_thread_horizon.cc`
-steht auf `false` (dokumentierte Lücke). Die VM ermittelt beim Isolate-Start
-die Stack-Grenzen zur Überlauferkennung; ohne sie arbeitet sie je nach Pfad mit
-Null-Grenzen weiter, was genau dieses Fehlerbild ergibt – Absturz ohne Meldung,
-noch vor jeder Allokation.
+**Der Verdacht auf `GetCurrentStackBounds` hat sich in der Quelle bestätigt**
+(Belege im Einzelnen in `docs/porting-notes.md`):
 
-Naheliegender erster Versuch: echte Grenzen liefern statt `false`, über
-`pthread_getattr_np` oder über die Stack-Angaben, die `os_thread_horizon.cc`
-beim Anlegen des Threads ohnehin kennt.
+- `vm/os_thread.cc:50` macht aus einem `false` **`FATAL("Failed to retrieve
+  stack bounds")`**. Der bisherige Vermerk, die VM falle auf konservativere
+  Verfahren zurück, war falsch – er beschreibt eine ältere Dart-Fassung.
+- Der Aufruf steht im Konstruktor jedes `OSThread`, und der erste entsteht in
+  `OSThread::Init()` (`vm/dart.cc:374`), also mitten in `Dart_Initialize`.
+- `Dart_Initialize` läuft **nicht** bei `FlutterEngineInitialize`, sondern erst
+  bei `FlutterEngineRunInitialized`: Dort ist `EmbedderEngine::LaunchShell()`
+  der erste Schritt (`embedder.cc:2476`), und erst der ruft `Shell::Create` →
+  `DartVMRef::Create` → `Dart_Initialize`. Damit ist der FATAL das Erste, was
+  in `RunInitialized` überhaupt passieren kann.
+
+**Warum die Meldung fehlte, war ein zweiter Fehler.** `FATAL` schreibt über
+`Syslog::PrintErr` (`platform/assert.cc:37`), nicht über `OS::PrintErr` – und
+`syslog_linux.cc` schreibt auf `stderr`, das auf der Konsole nirgendwohin geht.
+Die ausbleibende Meldung war also **kein** Beleg dafür, dass die VM nichts zu
+melden hatte.
+
+Beides ist behoben und **auf Hardware bestätigt**:
+
+- [x] `Syslog::VPrint`/`VPrintErr` gehen für Horizon durch dieselbe schwach
+      gebundene Senke wie `OS::Print` (Patch in `patch-engine-horizon.py`)
+- [x] `GetCurrentStackBounds` liefert echte Grenzen – über `svcQueryMemory` auf
+      den aktuellen Stackpointer, gestellt vom Embedder
+      (`embedder/src/platform/stack_bounds_horizon.cpp`), damit `<switch.h>`
+      nicht in die Dart-VM gerät
+
+### Was der erste Lauf mit Meldeweg zeigte
+
+Sofort eine verwertbare Zeile – `socketpair` schlägt mit `ENOSYS` fehl, weil
+libnx es nur pro forma definiert. Ersetzt durch ein selbst geknüpftes
+TCP-Paar über `127.0.0.1`, mit einem Rückfall ohne Weckdeskriptor. Der
+Hardware-Lauf hat entschieden: **Loopback trägt**, der Rückfall bleibt
+ungenutzt. Einzelheiten in `docs/porting-notes.md`.
+
+### Die dritte Ursache: ein weiterer stummer Kanal
+
+Danach brach es erneut ohne Meldung ab. Sieben Marken zwischen
+`EventHandler::Start` und `OS::Init` haben die Stelle eingekreist: Es lag
+**nicht** am Poll-Thread und nicht an `SocketBase::Initialize` – beide laufen
+durch – sondern in `SnapshotHeaderReader::InitializeGlobalVMFlagsFromSnapshot`.
+
+Und auch das war kein Speicherfehler, sondern ein sauber erkannter Fehler in
+einem dritten nicht angeschlossenen Kanal: `FML_LOG` schreibt in
+`fml/logging.cc` mit `fprintf` nach `stderr` und ruft für `kLogFatal`
+anschließend `KillProcess()` → `abort()`. Die Engine hat den Fehler die ganze
+Zeit gemeldet.
+
+- [x] `FML_LOG` geht für Horizon durch dieselbe Senke. Anders als die Marken in
+      `dart.cc` ist das kein Wegwerf-Code: Ohne diesen Weg bleibt jede
+      Engine-Meldung auf der Zielplattform unsichtbar.
+
+### Die vierte Ursache: der Snapshot passte nicht zur VM
+
+```text
+Wrong full snapshot version, expected '0150713ccc165a92bb03706c55150060'
+                            found    '78da37fed6bf1489361a312568249f3f'
+```
+
+`dart/tools/make_version.py:20-45` bildet den Snapshot-Hash als MD5 über 15
+Quelldateien, darunter `dart.cc`, `app_snapshot.cc` und `image_snapshot.cc`.
+**Jede Änderung an einer davon macht jeden vorhandenen Snapshot ungültig** –
+und die Portierung ändert mehrere davon. Dazu kommt ein zweiter, härterer
+Grund: Wir bauen mit `dart_use_compressed_pointers=false`, der
+Android-`gen_snapshot` erzeugt Snapshots *mit* Compressed Pointers.
+
+Damit ist der Shortcut aus Meilenstein 1b erledigt. Er trug für den Ladeweg,
+nicht für die Ausführung.
+
+**Arbeitsregel ab jetzt:** `gen_snapshot` und Engine kommen immer aus
+demselben Stand. Wer eine der 15 Dateien anfasst – auch nur, um eine
+Debug-Marke zu entfernen –, muss beides neu bauen.
+
+### Ergebnis
+
+```text
+SnapshotFlags: VerifyVersion durch (ok)
+SnapshotFlags: Merkmale = '… arm64 horizon no-compressed-pointers'
+Dart::Init: OSThread::Init fertig (Stackgrenzen stehen)
+VirtualMemory::AllocateAligned name=dart-heap size=524288 → 0x5755080000
+FlutterEngineRunInitialized = 0 (kSuccess)
+SendWindowMetricsEvent     = 0 (kSuccess)
+```
+
+Auf dem Bildschirm der Konsole läuft der blaue Balken aus `main.dart`.
+
+### Zur Fehlermeldung der Konsole
+
+Der Code lautet **2162-0002**, nicht `2168-0002`. Er ist der generische Fatal
+für eine unbehandelte Ausnahme im Programm und benennt keine Ursache – bei drei
+der vier Befunde war er die Folge eines `abort()` nach einer korrekt erkannten
+Fehlersituation. Die Adressen des Backtrace ließen sich gegen `ui_app.elf`
+nicht schlüssig auflösen; die dort genannte Startadresse ist nicht die Basis
+unserer NRO. Der Fatal-Screen ist kein Werkzeug. Die Logsenke ist es – aber nur,
+solange jeder Kanal daran hängt.

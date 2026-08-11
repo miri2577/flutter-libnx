@@ -16,17 +16,14 @@ TOPDIR ?= $(CURDIR)
 include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
-TARGET		:=	ui_app
+TARGET		:=	thread_probe
 BUILD		:=	build
-# embedder/src/engine enthaelt, was den Engine-Header braucht - deshalb
-# getrennt von der Plattformschicht, damit kleine Beispiele ohne Engine (etwa
-# thread_probe) weiterhin bauen.
-SOURCES		:=	source generated ../../embedder/src ../../embedder/src/platform ../../embedder/src/engine
+SOURCES		:=	source ../../embedder/src ../../embedder/src/platform
 DATA		:=	data
 INCLUDES	:=	../../embedder/include
-ROMFS	:=	romfs
+#ROMFS	:=	romfs
 
-APP_TITLE	:=	ui_app
+APP_TITLE	:=	thread_probe
 APP_AUTHOR	:=	flutter-libnx
 APP_VERSION	:=	0.1.0
 
@@ -40,49 +37,12 @@ CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 
-#---------------------------------------------------------------------------------
-# Fuer Horizon gebaute Flutter Engine.
-#
-# Absolute Pfade koennen nicht ueber INCLUDES/LIBDIRS laufen: Das Template
-# stellt dort $(CURDIR) voran bzw. erwartet ein lib/-Unterverzeichnis. Deshalb
-# direkt ueber CFLAGS und LIBS.
-#---------------------------------------------------------------------------------
-ENGINE_SRC	?=	$(HOME)/engine/flutter/engine/src
-ENGINE_OUT	?=	$(ENGINE_SRC)/out/horizon_release_arm64
-ENGINE_LIB	:=	$(ENGINE_OUT)/obj/flutter/shell/platform/embedder/libflutter_engine.a
-ENGINE_INC	:=	$(ENGINE_SRC)/flutter/shell/platform/embedder
-
-CFLAGS	+=	-I$(ENGINE_INC)
-CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++20
+CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 
 ASFLAGS	:=	-g $(ARCH)
-#---------------------------------------------------------------------------------
-# Verzeichnis-Deskriptoren gibt es auf Horizon nicht (siehe
-# embedder/src/platform/posix_compat_horizon.cpp). Damit die Handles, die
-# diese Schicht vergibt, auch bei dup/close/fstat erkannt werden, laufen die
-# drei Aufrufe ueber Wrapper. Fuer echte Deskriptoren reichen sie unveraendert
-# an libc weiter.
-#---------------------------------------------------------------------------------
-WRAPS	:=	-Wl,--wrap=close -Wl,--wrap=dup -Wl,--wrap=fstat
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-# DIAGNOSE (flutter-libnx): Waechter um jede Heap-Allokation, siehe
-# embedder/src/platform/heap_guard_horizon.cpp. Sucht die Speicherbeschaedigung,
-# die sich als Data Abort in _malloc_r zeigt. Kostet Speicher und Zeit - nach
-# der Fehlersuche wieder entfernen.
-# ABGESCHALTET (2026-08-11). Der Ansatz war zu eingreifend und hat zweimal
-# eigene Fehler erzeugt, ohne den gesuchten zu finden - Einzelheiten in
-# docs/porting-notes.md. Wer ihn wieder einschaltet, muss vorher die dort
-# genannten drei Bedingungen erfuellen.
-#WRAPS	+=	-Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc
-#WRAPS	+=	-Wl,--wrap=memalign
-
-# -u erzwingt die Einbindung des Absturzberichts. Aufgerufen wird er nur aus
-# libnx' Assembler-Zweig, im Programm referenziert ihn niemand - ohne das darf
-# der Linker ihn wegwerfen, und dann fehlt er genau dann, wenn er gebraucht
-# wird.
-LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(WRAPS) -Wl,-u,__libnx_exception_handler -Wl,-Map,$(notdir $*.map)
-
-LIBS	:= $(ENGINE_LIB) -lnx
+LIBS	:= -lnx
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

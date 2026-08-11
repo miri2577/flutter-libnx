@@ -12,11 +12,23 @@ mkdir -p "$(dirname "$LOG")"
 
 rm -f "$D/$EX.elf"
 bash /mnt/e/flutter-libnx/scripts/build-example-wsl.sh "$EX" > "$LOG" 2>&1
+BUILD_RC=$?
 
 # Erst prüfen, ob überhaupt gelinkt wurde. Ein leeres Protokoll und ein
 # fehlerfreies sehen bei einer reinen Symbolzählung gleich aus.
 if [ ! -s "$LOG" ]; then
   echo "FEHLER: Protokoll ist leer - der Build lief gar nicht an."
+  exit 1
+fi
+
+# Und noch davor: Ein Compilerfehler beendet make, bevor der Linker ueberhaupt
+# laeuft. Die Symbolzaehlung meldete dann "0 undefinierte Symbole" - richtig
+# gezaehlt und trotzdem irrefuehrend, weil die alte NRO unveraendert liegen
+# blieb. Dieselbe Falle wie beim Zaehler, der nur eine Fehlerart kannte.
+if [ "$BUILD_RC" -ne 0 ]; then
+  echo "FEHLER: make endete mit $BUILD_RC - es wurde nichts gelinkt."
+  grep -E "error:|Error [0-9]+" "$LOG" | head -10 | sed 's/^/  /'
+  echo "  vollstaendig: $LOG"
   exit 1
 fi
 if ! grep -q "linking\|built \.\.\.\|Error\|error" "$LOG"; then

@@ -31,14 +31,27 @@
 // `dart_use_compressed_pointers=false`. Der ASSERT unten stellt sicher, dass
 // diese Verbindung nicht unbemerkt zerfällt.
 
+// Der Wächter ist nicht bloß Formsache: Die Datei steht unbedingt in der
+// Quellenliste, und beim Bau von gen_snapshot für den Entwicklungsrechner ist
+// der Host Linux. Ohne ihn wären hier und in virtual_memory_posix.cc dieselben
+// Symbole definiert. Die vier übrigen Horizon-Quellen tragen ihn längst; diese
+// war die einzige ohne, und es fiel erst auf, als zum ersten Mal etwas für den
+// Host gebaut wurde.
+#include "platform/globals.h"
+
+#if defined(DART_HOST_OS_HORIZON)
+
 #include "vm/virtual_memory.h"
 
 #include <malloc.h>
 
 #include "platform/assert.h"
 #include "platform/utils.h"
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "vm/memory_region.h"
 
@@ -64,6 +77,114 @@ void VmLog(const char* format, ...) {
   va_end(args);
   flutter_libnx_vm_log(buffer);
 }
+}  // namespace
+
+// WÄCHTER-BYTES (flutter-libnx, Fehlersuche zum Absturz in _malloc_r).
+//
+// Ein Data Abort in newlibs malloc bedeutet beschädigte Verwaltungsstrukturen:
+// Irgendwer schreibt über einen Block hinaus. Der Schaden entsteht früher als
+// der Absturz, deshalb nützt die Absturzstelle wenig.
+//
+// Hier bekommt jeder Block der VM einen Wächterbereich hinter dem Nutzteil.
+// Wird er beim Freigeben verändert vorgefunden, ist der Überlauf genau diesem
+// Block zuzuordnen – mit Name und Größe. Zusätzlich werden in Abständen alle
+// lebenden Blöcke geprüft, damit sich der Schaden zeitlich eingrenzen lässt,
+// statt erst beim Freigeben aufzufallen.
+//
+// Bewusst nur *hinter* dem Nutzteil: Ein Wächter davor würde die Ausrichtung
+// verschieben, und genau die verlangt die VM (bis zu 512 KB).
+//
+// Nach der Fehlersuche wieder entfernen - die Prüfung kostet bei jeder
+// Allokation Zeit.
+namespace {
+
+constexpr intptr_t kGuardBytes = 64;
+constexpr uint8_t kGuardPattern = 0xA5;
+
+// Wie oft alle lebenden Blöcke geprüft werden. Bei jeder Allokation wäre es
+// gründlicher, aber die VM allokiert in Schüben - das würde den Start spürbar
+// bremsen.
+constexpr intptr_t kSweepEvery = 64;
+
+struct LiveBlock {
+  uint8_t* address;
+  intptr_t size;
+  const char* name;
+  LiveBlock* next;
+};
+
+LiveBlock* g_live = nullptr;
+intptr_t g_alloc_count = 0;
+pthread_mutex_t g_guard_lock = PTHREAD_MUTEX_INITIALIZER;
+
+bool GuardIntact(const uint8_t* address, intptr_t size) {
+  for (intptr_t i = 0; i < kGuardBytes; i++) {
+    if (address[size + i] != kGuardPattern) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ReportBroken(const LiveBlock& block) {
+  VmLog("HEAP-UEBERLAUF: Block '%s' (%ld Bytes, %p) hat seinen Waechter "
+        "ueberschrieben",
+        block.name != nullptr ? block.name : "?",
+        static_cast<long>(block.size), block.address);
+  // Die ersten Bytes des Wächters zeigen oft, was hineingeschrieben wurde.
+  const uint8_t* g = block.address + block.size;
+  VmLog("  Waechter: %02x %02x %02x %02x %02x %02x %02x %02x", g[0], g[1],
+        g[2], g[3], g[4], g[5], g[6], g[7]);
+}
+
+// Alle lebenden Blöcke prüfen. Der Aufrufer hält die Sperre.
+void SweepLocked() {
+  for (LiveBlock* b = g_live; b != nullptr; b = b->next) {
+    if (!GuardIntact(b->address, b->size)) {
+      ReportBroken(*b);
+    }
+  }
+}
+
+void GuardWrite(uint8_t* address, intptr_t size, const char* name) {
+  memset(address + size, kGuardPattern, kGuardBytes);
+
+  LiveBlock* entry = static_cast<LiveBlock*>(malloc(sizeof(LiveBlock)));
+  if (entry == nullptr) {
+    return;  // Ohne Buchführung nur kein Sweep; der Wächter steht trotzdem.
+  }
+  entry->address = address;
+  entry->size = size;
+  entry->name = name;
+
+  pthread_mutex_lock(&g_guard_lock);
+  entry->next = g_live;
+  g_live = entry;
+  if (++g_alloc_count % kSweepEvery == 0) {
+    SweepLocked();
+  }
+  pthread_mutex_unlock(&g_guard_lock);
+}
+
+void GuardCheckAndForget(uint8_t* address) {
+  pthread_mutex_lock(&g_guard_lock);
+  LiveBlock** link = &g_live;
+  while (*link != nullptr) {
+    if ((*link)->address == address) {
+      LiveBlock* found = *link;
+      if (!GuardIntact(found->address, found->size)) {
+        ReportBroken(*found);
+      }
+      *link = found->next;
+      pthread_mutex_unlock(&g_guard_lock);
+      free(found);
+      return;
+    }
+    link = &(*link)->next;
+  }
+  pthread_mutex_unlock(&g_guard_lock);
+}
+
 }  // namespace
 
 namespace dart {
@@ -102,23 +223,25 @@ VirtualMemory* VirtualMemory::AllocateAligned(intptr_t size,
   ASSERT(!is_executable);
   ASSERT(!is_compressed);
 
-  VmLog("VirtualMemory::AllocateAligned name=%s size=%ld align=%ld exec=%d "
-        "compressed=%d",
-        name != nullptr ? name : "?", static_cast<long>(size),
-        static_cast<long>(alignment), is_executable ? 1 : 0,
-        is_compressed ? 1 : 0);
-
+  // Ausführbarer Speicher lässt sich hier nicht liefern. Im AOT-Product-Modus
+  // wird er auch nicht gebraucht (siehe Kopf der Datei) – fragt ihn doch
+  // jemand an, ist eine Meldung besser als stiller Erfolg mit falscher
+  // Zusicherung. Diese eine bleibt: Sie feuert nie im Normalbetrieb.
   if (is_executable) {
-    VmLog("  ACHTUNG: ausfuehrbarer Speicher angefordert - Horizon kann das "
-          "nicht liefern");
+    VmLog("VirtualMemory::AllocateAligned: ausfuehrbarer Speicher angefordert "
+          "(%s) - Horizon kann das nicht liefern",
+          name != nullptr ? name : "?");
   }
 
-  void* address = memalign(alignment, size);
+  // Wächter hinter dem Nutzbereich mitanfordern, siehe GuardCheck oben.
+  void* address = memalign(alignment, size + kGuardBytes);
   if (address == nullptr) {
-    VmLog("  memalign fehlgeschlagen");
+    VmLog("VirtualMemory::AllocateAligned: memalign(%ld, %ld) fehlgeschlagen",
+          static_cast<long>(alignment),
+          static_cast<long>(size + kGuardBytes));
     return nullptr;
   }
-  VmLog("  -> %p", address);
+  GuardWrite(static_cast<uint8_t*>(address), size, name);
 
   MemoryRegion region(address, size);
   return new VirtualMemory(region, region);
@@ -126,6 +249,7 @@ VirtualMemory* VirtualMemory::AllocateAligned(intptr_t size,
 
 VirtualMemory::~VirtualMemory() {
   if (vm_owns_region()) {
+    GuardCheckAndForget(reinterpret_cast<uint8_t*>(reserved_.pointer()));
     free(reserved_.pointer());
   }
 }
@@ -150,3 +274,5 @@ void VirtualMemory::Protect(void* address, intptr_t size, Protection mode) {
 }
 
 }  // namespace dart
+
+#endif  // defined(DART_HOST_OS_HORIZON)

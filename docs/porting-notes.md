@@ -6,6 +6,1083 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-11 (Nacht) – Der Wirtsprozess vergisst nichts
+
+Leitmotiv des Tages, in einem Satz: **Die NRO läuft im Prozess des Spiels,
+und alles, was ein Lauf nicht selbst zurückbaut, erbt der nächste** – Heap-
+Seitenzustände genauso wie Service-Sessions. Zwei Fehlerbilder, eine Wurzel.
+
+### Erbschaftsbereinigung bestätigt
+
+`flutter_libnx_heal_heap` (in `thread_diag_horizon.cpp`, Aufruf als Erstes in
+`main()`) baut geerbte `svcMapMemory`-Löcher im Heap per Spiegel-Paarung
+zurück. Sicherungen: eigener Main-Stack ausgenommen (Spiegel unter SP);
+Paarung nur bei exakt gleicher Größe; Mesosphäre validiert die physische
+Entsprechung, falsche Paarungen sind folgenlose Fehlversuche.
+
+**Fünf Zyklen im selben Wirtsprozess, alle sauber gestartet und beendet** –
+jeder ab dem zweiten mit genau einem zurückgebauten 1-MB-Erbstück (dem Stack
+des letzten abgelösten Threads des Vorlaufs, den libnx' lazy-Reaper nie mehr
+abräumt). Vorher starb verlässlich jeder zweite Start an `_malloc_r`
+(`FAR = X3+8`) oder `threadCreate` (0xd401).
+
+### Sessions leaken genauso: 2011-0102 nach dem dritten Zyklus
+
+Neues Fehlerbild, nachdem die Heap-Erbschaft geheilt war: Systemabsturz
+**nach** sauberem App-Abgang („ui_app beendet" noch im Log), deterministisch
+beim jeweils dritten Lauf im selben Prozess, zwei Sitzungen lang. Fehlercode
+`2011-0102 (0xcc0b)` = Modul 11 (HIPC), Beschreibung 102 – **out of
+sessions**.
+
+Täter: `fonts_horizon.cpp` rief `plInitialize` je Lauf, `plExit` existierte
+nicht – eine pl:u-Session samt gemappter Shared-Font-Memory je Zyklus. Dazu
+`romfsInit` ohne `romfsExit`. Nach drei Zyklen war das Limit erschöpft; das
+nächste, was im Prozess eine Session brauchte (hbmenu-Reload nach unserem
+Abgang), starb – deshalb der Absturz *nach* uns, nicht *in* uns.
+
+Reparatur: `flutter_libnx_fonts_cleanup()` (plExit) + `romfsExit()` nach dem
+Engine-Shutdown, vor dem Log-Abbau. Mit beiden Reparaturen zusammen: die
+fünf sauberen Zyklen oben, wo vorher bei drei Schluss war.
+
+**Merksatz für alle weiteren Dienste:** Auf dieser Plattform ist jedes
+`xyInitialize` ohne sein `xyExit` kein Schönheitsfehler, sondern eine
+tickende Uhr im Wirtsprozess. Bei neuen Diensten (`csrng` ist so ein
+Kandidat – `csrngGetRandomBytes` läuft bisher ohne explizites
+`csrngInitialize`/`csrngExit`) sofort das Paar anlegen.
+
+---
+
+## 2026-08-11 (Abend) – Controller gelöst, Absturzursache gefunden
+
+### Controller-Eingabe: zwei stumme Verwerfungen hintereinander
+
+**Auf Hardware bestätigt: Steuerkreuz, Stick und A wirken.** Der Weg dorthin
+deckte zwei getrennte Fehler auf, beide vom selben Schlag wie die drei stummen
+Kanäle vom 2026-08-10 – *ein Ereignis wird verworfen, der Absender bekommt
+Erfolg gemeldet*.
+
+**1. Das View-Fokus-Ereignis kam zu früh.** Der Empfänger ist das
+`View`-Widget aus `runApp()` (`widgets/view.dart:241`, über
+`WidgetsBindingObserver.didChangeViewFocus`). Gesendet wurde direkt nach
+`RunInitialized` – und weil Plattform- und UI-Runner hier derselbe Thread
+sind, stellt `Shell::OnPlatformViewSendViewFocusEvent` (`shell.cc:2306`) über
+`RunNowOrPostTask` *sofort* zu, bevor die Hauptschleife die Startaufgaben des
+Isolates abgearbeitet hat. Dann verwirft
+`RuntimeController::SendViewFocusEvent` (`runtime_controller.cc:216`) das
+Ereignis mit stillem `return false` – keine Pufferung, und der
+Embedder-Aufruf meldet trotzdem `kSuccess`. **Konsequenz:** Das Ereignis wird
+jetzt erst nach dem ersten präsentierten Frame gesendet (Flag im
+Present-Callback); dann hat der Widget-Baum sicher gebaut. Richtung
+`kForward`, damit `findFirstFocus` deterministisch das erste fokussierbare
+Widget nimmt.
+
+**2. Reine KeyData-Ereignisse dispatcht das Framework nicht.** Der
+`KeyEventManager` arbeitet im Modus `keyDataThenRawKeyData`
+(`hardware_keyboard.dart:1082-1113`): Nicht-synthetische Ereignisse aus
+`FlutterEngineSendKeyEvent` landen in der Warteschlange
+`_keyEventsSinceLastMessage` und werden erst zugestellt, wenn die zugehörige
+*Rohnachricht* auf dem Kanal `flutter/keyevent` eintrifft. Die
+Desktop-Embedder senden deshalb immer beides als Paar. Wir sendeten nur
+KeyData – die Ereignisse stauten sich für immer, `handled=0` bei stehendem
+Fokus (Bildschirmanzeige: `focusNode (Kontext: true)`). **Konsequenz:**
+`synthesized=true` nimmt die dokumentierte Abkürzung – synthetische
+Ereignisse bei leerer Warteschlange werden sofort über `handleKeyEvent` +
+`keyMessageHandler` zugestellt (voller Widget-Pfad, Fokus, Shortcuts,
+Actions). **Preis: Die `handled`-Rückmeldung an den Embedder ist seitdem
+prinzipbedingt immer `false` und taugt nicht mehr als Diagnosesignal.** Wer
+sie braucht, muss das Nachrichtenpaar der Desktop-Embedder nachbauen
+(GLFW-Keymap auf `flutter/keyevent`).
+
+### Sporadischer Absturz: die NRO erbt einen gebrauchten Heap
+
+**Der echte Fehlercode statt ENOMEM** (über `thread_diag_horizon.cpp`):
+
+```text
+threadCreate: 0x0000d401 = Modul 1, Beschreibung 106
+            = KernelError_InvalidMemoryState
+```
+
+Kein Speichermangel – der von `memalign` gelieferte Stack-Block enthielt
+Seiten, deren Memory-State `svcMapMemory` nicht zulässt.
+
+**Der Heap-Scanner** (`flutter_libnx_scan_heap` in `thread_diag_horizon.cpp`,
+Kontrollpunkte in `main()`) hat den Unterschied zwischen Erfolgs- und
+Fehlschlagsläufen gefangen:
+
+| Lauf | Beim Eintritt in `main()` |
+|---|---|
+| Erfolg | 1 geliehene Region (2256 KB, immer, gleiche Adresse) |
+| Fehlschlag | dieselbe **plus ein 1-MB-Loch** (`attr=IsBorrowed`, `perm=None`) |
+
+Das Loch existiert, *bevor* unser Code etwas getan hat. Erklärung: Die NRO
+läuft im Prozess des Spiels, hbloader übergibt den Heap „gebraucht" – die
+Kernel-Zustände der Seiten überleben den NRO-Wechsel. Ein *erfolgreicher*
+Lauf hinterlässt beim Abgang mindestens einen noch gemappten Thread-Stack;
+der nächste Start im selben Prozess hält diese Seiten für freien Speicher.
+Beide Symptome folgen aus demselben Loch:
+
+* Freilisten-Kette läuft hinein → Lesen von `next` bei +8 in unlesbarer
+  Region → Data Abort in `_malloc_r` mit `FAR = X3 + 8`
+* `memalign` reicht das Loch an `threadCreate` weiter → `svcMapMemory` →
+  `InvalidMemoryState` (0xd401)
+
+**Die Abwechslung „jeder zweite Start" ist damit erklärt:** Ein Absturz
+reißt den Wirtsprozess mit (nächster Start: frischer Heap → Erfolg), ein
+Erfolg hinterlässt Löcher (nächster Start im selben Prozess: Fehlschlag).
+Die Vorhersage „nach Absturz gelingt der nächste Lauf" ist auf Hardware
+eingetroffen.
+
+**Offen:**
+
+* Erbschaftsbereinigung beim Start: geerbte Löcher per `svcUnmapMemory`
+  zurückbauen. Der Kernel validiert das Paar (dst, src, size); Fehlversuche
+  bei der Paarungssuche sind harmlos.
+* Eigener Abgang ohne Hinterlassenschaft: Welcher Thread bleibt nach
+  `FlutterEngineShutdown` gemappt? (Scan vor dem Beenden einbauen.)
+* Die konstante 2256-KB-Region stammt nicht von uns (schon im frischen
+  Prozess da, immer gleiche Adresse) – mutmaßlich hbmenu/hbloader. Solange
+  sie *ein* Block bleibt, den `memalign` nie erwischt hat, ist sie harmlos;
+  die Bereinigung sollte sie trotzdem mitnehmen.
+
+---
+
+## 2026-08-11 – Stand bei Sitzungsende
+
+**Zwei getrennte Fehler sind offen, beide gut eingegrenzt.**
+
+### 1. Sporadischer Absturz in `_malloc_r`
+
+Tritt bei `FlutterEngineRunInitialized` auf, etwa jeder zweite Lauf. Über
+mehrere Berichte hinweg **dasselbe Muster**:
+
+```text
+PC, LR  →  _malloc_r
+FAR = X3 + 8
+```
+
+Die angefasste Adresse liegt konstant acht Bytes hinter dem Wert in X3 – das
+Bild eines Freilisten-Zeigers, dessen Nachfolgerfeld ins Leere zeigt. Dass es
+über verschiedene Läufe hinweg gleich aussieht, spricht gegen Zufall und für
+eine Beschädigung der Heap-Verwaltung.
+
+Ausgeschlossen ist inzwischen:
+
+| Verdacht | Befund |
+|---|---|
+| Speichermangel | `thread_probe`: 64 Threads à 1 MB gehen mühelos, Zahlen rühren sich nicht |
+| Heap defekt übergeben | Heap-Probe beim Start: 256 MB am Stück nutzbar |
+| Zu große Thread-Stacks | halbiert, ohne Wirkung |
+| Zu viele Engine-Threads | zusammengelegt, ohne Wirkung |
+| Überlauf eigener VM-Blöcke | Wächter in `virtual_memory_horizon.cc` schweigen |
+
+Der Schaden entsteht also **zwischen** dem Programmstart (Heap noch intakt) und
+dem VM-Start. Nicht geprüft sind bisher: `romfsInit`, `framebufferCreate`
+(Schattenpuffer) und die statischen Konstruktoren.
+
+### 2. Controller-Eingabe ohne Wirkung
+
+Beweiskette vollständig, Ursache benannt, Reparatur **gebaut aber ungetestet**
+(der Lauf stürzte vorher an Fehler 1 ab):
+
+- Ereignisse erreichen das Framework – 72 gesendet, 72 Rückmeldungen
+- Keines wird beansprucht – `handled=0`, auch bei Enter
+- Touch funktioniert, weil Zeiger keinen Fokus brauchen
+- **Das Framework hält die View für unfokussiert**, bis der Embedder das
+  Gegenteil meldet
+
+Eingebaut, noch nicht auf Hardware bestätigt:
+`FlutterEngineSendViewFocusEvent` mit `kFocused` (`embedder.h:2997`), dazu die
+Lebenszyklus-Nachricht `AppLifecycleState.resumed`. Beides ist nötig: Die eine
+sagt „die Anwendung ist aktiv", die andere „diese View hat den Eingabefokus".
+
+### Werkzeuge, die bereitstehen
+
+| Werkzeug | Zweck |
+|---|---|
+| `examples/thread_probe` | Threads und Heap messen, ohne Engine – baut in Sekunden |
+| `embedder/src/platform/crash_handler_horizon.cpp` | Absturzbericht mit PC/LR/FAR und Bezugspunkt |
+| `build-logs/resolve-crash.sh` | Adressen in Quellzeilen auflösen |
+| `embedder/src/platform/thread_diag_horizon.cpp` | echter Result-Code bei Threadfehlern |
+| `TRACE=1 scripts/patch-engine-horizon.py` | Startmarken ein-/ausschalten |
+| `scripts/rebuild-all.sh` | ganze Kette in richtiger Reihenfolge |
+
+---
+
+## 2026-08-11 – Gemessen statt erschlossen: `ENOMEM` bedeutet gar nichts
+
+**Ein Messprogramm ohne Engine** (`examples/thread_probe`, 277 KB, Bauzeit
+Sekunden) hat die Grundlage der letzten Stunden widerlegt.
+
+```text
+[Start]   gesamt 3189 MB, Heap 3183 MB, ausserhalb 5 MB
+pthread_create,     1 MB Stack:  64 Threads erzeugt   (alle, kein Fehler)
+libnx threadCreate, 1 MB Stack:  64 Threads erzeugt   (alle)
+Heap danach:                     bis 256 MB am Stueck nutzbar
+```
+
+**Beide Wege schaffen 64 Threads mit je 1 MB Stack, und die Speicherzahlen
+bewegen sich dabei um kein Megabyte.** Damit ist widerlegt:
+
+| Annahme | Befund |
+|---|---|
+| „rund 20 MB außerhalb des Heaps sind die Grenze" | die Zahl ändert sich auch bei 64 Threads nicht |
+| „2 MB Stack je Thread sind zu viel" | 64 × 1 MB gehen mühelos |
+| „`ENOMEM` heißt, der Speicher ist alle" | **falsch, siehe unten** |
+
+**Der eigentliche Fund** steht in `nx/source/runtime/newlib.c:209-213`:
+
+```c
+_error2:
+    threadClose(&t->thr);
+_error1:
+    __libnx_free(t);
+    return ENOMEM;      // immer, egal was scheiterte
+```
+
+`__syscall_thread_create` verwirft den Result-Code und meldet für **jeden**
+Fehlschlag `ENOMEM` – ob `threadCreate`, `svcSetThreadCoreMask` oder
+`threadStart` gescheitert ist. Die Meldung
+
+    Could not start thread dart:io EventHandler: 12 (Not enough space)
+
+sagt also nichts über die Ursache. Alle daraufhin gebauten Reparaturen –
+kleinere Stacks, Heap-Reserve, Heap-Verkleinerung, zusammengelegte
+Task-Runner – zielten auf eine Diagnose, die es nie gegeben hat.
+
+*Dieselbe Falle wie beim Zähler in `relink-example.sh`, der nur eine Fehlerart
+kannte und bei jeder anderen Erfolg meldete. Eine Fehlermeldung ist erst dann
+eine Information, wenn belegt ist, dass sie zwischen Fällen unterscheidet.*
+
+**Ein eigener Messfehler gehört dazu:** Der erste Durchlauf meldete 31 pthreads
+statt 64 – weil die zuvor erzeugten 64 libnx-Threads noch liefen. Proben
+müssen ihren Zustand hinterher aufräumen, sonst misst die nächste nur den Rest.
+
+**Was offen bleibt:** Warum der Thread in der Anwendung scheitert, ist damit
+wieder unbekannt – nur Speicher und Threadanzahl sind ausgeschlossen. Der
+nächste Schritt ist, den echten Result-Code sichtbar zu machen, statt ihn sich
+von der pthread-Schicht verschlucken zu lassen.
+
+---
+
+## 2026-08-11 – Task-Runner zusammengelegt: Eingabe gewonnen, Speicher nicht
+
+**Ausgangslage:** Zwei getrennte Probleme, für die derselbe Umbau in Frage kam.
+
+1. `Could not start thread …: 12 (Not enough space)` – der Prozess hat
+   außerhalb des Heaps nur rund 20 MB für Thread-Stacks und deren
+   Spiegelabbildungen.
+2. Controller-Eingabe ohne Wirkung: 70 Tastenereignisse mit `kSuccess`
+   gesendet, **keine einzige Rückmeldung**.
+
+**Der Umbau:** `FlutterCustomTaskRunners` mit demselben Runner für Plattform-,
+Render- und UI-Aufgaben (`embedder/src/task_runner.cpp`). Die Engine erzeugt
+dafür keine eigenen Threads mehr; die Hauptschleife arbeitet die Aufgaben mit
+`FlutterEngineRunTask` ab.
+
+**Was er gebracht hat – Punkt 2 ist gelöst:** 44 gesendete Tastenereignisse,
+**44 Rückmeldungen**. Vorher null. Die Ursache war, dass die Engine auf dem
+aufrufenden Thread eine Nachrichtenschleife erwartet; wer dort eine eigene
+betreibt, ohne ihre Aufgaben abzuholen, bekommt nie eine Antwort. Rendering und
+Touch funktionierten trotzdem, weil sie über UI- und Rasterthread liefen – ein
+Grund, warum das lange unbemerkt blieb.
+
+*Der Fehler war damit von „reagiert nicht" auf „kommt an, wird nicht
+beansprucht" eingegrenzt: Alle Rückmeldungen lauten `handled=0`, auch bei
+Enter. Es hält also nichts den Fokus.*
+
+**Was er nicht gebracht hat – Punkt 1 besteht fort:** Der `ENOMEM`-Fehler trat
+erneut auf. Im Nachhinein einleuchtend: Der scheiternde Thread gehört nicht der
+Engine, sondern **Dart** (`dart:io`-Eventhandler). Drei Engine-Threads
+einzusparen hilft, reicht aber nicht – Dart legt weiterhin eigene an.
+
+**Damit sind alle bequemen Hebel ausgeschöpft:**
+
+| Ansatz | Ergebnis |
+|---|---|
+| Stackgröße halbieren (2 → 1 MB) | reicht nicht |
+| `__libnx_initheap` mit Reserve | wirkungslos, Loader gibt Heap vor |
+| Heap per `svcSetHeapSize` verkleinern | **zerstört die Anwendung** – hbloader lädt die NRO in diesen Heap |
+| Engine-Threads zusammenlegen | reicht nicht, Dart-Threads bleiben |
+
+Der Engpass ist strukturell: Der Homebrew-Loader gibt über 99 % des Speichers
+als newlib-Heap, und was der Kernel für Abbildungen braucht, liegt außerhalb
+davon. Der nächste Ansatzpunkt wäre, hbloader zu einem kleineren Heap zu
+bewegen (NACP/Loader-Konfiguration) oder zu klären, ob der Fehlschlag aus
+`__libnx_aligned_alloc` oder aus `svcMapMemory` stammt – das ist bisher nicht
+gemessen, sondern erschlossen.
+
+---
+
+## 2026-08-11 – Nachtrag: Der Eintrag unten greift zu kurz
+
+**Der Titel „Es war kein beschädigter Heap, sondern ein zu großer" ist nicht
+haltbar.** Der `ENOMEM`-Befund beim Thread-Start stimmt und ist belegt; die
+Schlussfolgerung, damit sei die Sache erklärt, war voreilig.
+
+Nach der Halbierung der Thread-Stacks (2 MB → 1 MB) trat derselbe Absturz
+erneut auf – und zwar **früher als je zuvor**: zwischen zwei Logzeilen in
+`main()`, lange vor `FlutterEngineInitialize`. Dazwischen liegt nur ein
+`appletGetAppletType()` und die Logausgabe selbst, die eine kleine Allokation
+vornimmt. PC und LR wieder in `_malloc_r`.
+
+An dieser Stelle existiert genau **ein** Thread. Ein Mangel an Speicher für
+Thread-Stacks kann es dort nicht sein. Es bleiben zwei Möglichkeiten:
+
+1. Der Heap ist zu diesem Zeitpunkt bereits beschädigt – durch etwas, das
+   vorher lief: statische Konstruktoren, `romfsInit`, `LogInit`,
+   `framebufferCreate`/`framebufferMakeLinear`.
+2. Der vom Loader übergebene Heap ist nicht in dem Umfang nutzbar, den
+   `fake_heap_end - fake_heap_start` angibt.
+
+**Was das für die Stack-Halbierung heißt:** Sie bleibt richtig – 20 MB
+außerhalb des Heaps sind für ein Dutzend Threads zu wenig, und der
+`ENOMEM`-Fehler war echt. Sie behebt aber offenbar nicht die Ursache der
+sporadischen Abstürze.
+
+**Und für `heap_layout_horizon.cpp`:** Die Datei ist im Normalfall
+wirkungslos, weil der Loader den Heap vorgibt. Sie bleibt für den Fall ohne
+Override, ist aber kein Beitrag zur Lösung.
+
+*Selbstkritik, die hierher gehört:* Der Eintrag unten wurde geschrieben,
+während ein einzelner Lauf durchlief. Genau davor warnt ein früherer Eintrag
+in dieser Datei – „ein sauberer Durchlauf beweist hier nichts". Ich habe die
+eigene Regel nicht angewandt.
+
+---
+
+## 2026-08-11 – Es war kein beschädigter Heap, sondern ein zu großer
+
+> **Eingeschränkt, siehe Nachtrag darüber.** Der `ENOMEM`-Befund stimmt, die
+> Schlussfolgerung „damit ist es erklärt" nicht.
+
+**Befund:** Nach dem Rückbau des Wächterwerkzeugs kam endlich eine eindeutige
+Meldung:
+
+```text
+runtime/bin/thread.cc:19: error: Could not start thread dart:io EventHandler:
+    12 (Not enough space)
+```
+
+12 ist `ENOMEM`. **Es war nie eine Speicherbeschädigung – der Speicher ging
+aus.** Damit fügen sich alle Beobachtungen zusammen: die sporadischen Abstürze
+an wechselnden Stellen, der Data Abort in `_malloc_r`, das Verschwinden des
+Fehlers nach einer BSS-Vergrößerung. Ein erschöpfter Heap sieht je nach
+Zeitpunkt anders aus, und `malloc` ist die Stelle, an der es am ehesten
+auffällt.
+
+**Die Ursache steht in libnx** (`nx/source/runtime/init.c:78`):
+
+```c
+if (mem_available > mem_used+0x200000)
+    size = (mem_available - mem_used - 0x200000) & ~0x1FFFFF;
+```
+
+Der newlib-Heap bekommt **alles bis auf 2 MB**. Für gewöhnliches Homebrew ist
+das richtig – es alloziert über malloc und sonst nichts. Die Flutter-Engine tut
+das Gegenteil: Sie legt ein gutes Dutzend Threads an, und libnx spiegelt jeden
+Stack zusätzlich per `svcMapMemory` an eine zweite Adresse
+(`nx/source/kernel/thread.c:132`). Diese Abbildungen brauchen Speicher, der
+**nicht** im Heap liegen darf.
+
+**Warum der Anwendungsmodus nicht genügte:** Der knappe Anteil wächst nicht
+mit. Gemessen wurden 3189 MB gesamt – davon 3168 MB Heap und **20 MB** für
+alles andere. Bei 2 MB je Stack sind das etwa zehn Threads, und genau an dieser
+Grenze entscheidet sich jeder Start.
+
+**Ein Irrweg, der festgehalten gehört:** Der erste Reparaturversuch war eine
+eigene Fassung von `__libnx_initheap` mit größerer Reserve. Sie hat nie
+gewirkt – der Homebrew-Loader gibt den Heap vor (`envHasHeapOverride()`), und
+damit wird der ganze Rechenweg übersprungen. Aufgefallen ist es nur, weil die
+Zahlen nicht zur Erwartung passten: 20 statt 256 MB. Die Protokollzeile sagt
+seither ausdrücklich, woher die Aufteilung stammt.
+
+*Regel daraus:* Wer eine Voreinstellung ändert, muss prüfen, ob sein Code sie
+überhaupt trifft. Ein Lauf, der danach durchläuft, beweist nichts – hier wäre
+sonst eine wirkungslose Änderung als Reparatur in die Ablage gewandert.
+
+**Was tatsächlich wirkt:** Den Heap nachträglich zu verkleinern verbietet sich,
+weil hbloader die NRO selbst hineinlädt. Der Hebel liegt auf der anderen Seite
+der Rechnung – `fml::Thread::GetDefaultStackSize()` liefert 2 MB, für Horizon
+jetzt 1 MB. Damit passen doppelt so viele Threads in denselben Rest. Der Wert
+ist nicht gegriffen: Dart gibt seinen eigenen Threads über
+`OSThread::GetMaxStackSize` ebenfalls 1 MB.
+
+**Zur Fehlleitung durch die eigene Messung:** Die Zeile
+„3185 von 3189 MB belegt" wurde lange als Auslastung gelesen. Sie ist die
+Heap-*Reservierung*. Wer sie so liest, sucht den Fehler dort, wo kein Speicher
+verbraucht wird. Die Zeile nennt jetzt Heapgröße und verbleibenden Rest
+getrennt.
+
+---
+
+## 2026-08-11 – Der Heap-Wächter war ein Fehlschlag, und warum
+
+**Vorhaben:** Jede Allokation über `-Wl,--wrap=malloc` einfassen – Kopf mit
+Größe und Aufrufer davor, Wächterbytes dahinter –, um die Speicherbeschädigung
+zu finden, die sich als Data Abort in `_malloc_r` zeigt.
+
+**Ergebnis: nichts gefunden, zwei eigene Fehler erzeugt.** Der Ansatz ist so
+nicht brauchbar, und die Gründe sind allgemeiner Natur:
+
+**1. `--wrap` erfasst nicht, was innerhalb von libc alloziert.** Der Schalter
+leitet nur Aufrufe um, die der Linker auflöst. `strdup`, `fopen`, `getcwd` und
+Verwandte rufen `_malloc_r` innerhalb derselben Bibliothek – daran kommt der
+Wrapper nicht heran. Ihre Blöcke haben also keinen Kopf, ihr `free()` landet
+aber sehr wohl beim Wrapper. Sichtbar wurde das als
+
+```text
+FREE eines fremden Blocks 0x14f9d8d410 (magic=0x00000031)
+```
+
+und die Blöcke wurden nicht freigegeben – ein selbst gebautes Speicherleck.
+
+**2. Ein verschobener Nutzzeiger bricht `malloc_usable_size`.** Der zweite
+Absturz saß in `_malloc_usable_size_r`: Die Funktion liest newlibs
+Verwaltungskopf unmittelbar vor dem übergebenen Zeiger und fand dort unseren.
+Skia und Dart fragen die nutzbare Blockgröße ab, also trifft es sie sofort.
+
+**3. Vorher schon:** `memalign` muss mitgewrappt werden, sobald `free` es ist –
+die Dart-VM alloziert damit ihren gesamten Heap. Ohne das las `free()` einen
+Kopf, den es nie gab.
+
+**Was ein zweiter Anlauf erfüllen müsste:**
+
+- Der zurückgegebene Zeiger bleibt **unverändert** der von malloc. Wächter nur
+  *hinter* dem Nutzbereich, Größen in einer eigenen Tabelle statt in einem
+  Kopf davor.
+- `free()` reicht unbekannte Blöcke **durch** an `__real_free`, statt sie zu
+  verwerfen.
+- Alle Allokatoren derselben Familie zusammen wrappen (`malloc`, `calloc`,
+  `realloc`, `memalign`, `free`) – oder keinen.
+
+**Die eigentliche Lehre:** Ein Diagnosewerkzeug, das tiefer eingreift als der
+gesuchte Fehler, produziert Befunde über sich selbst. Beide Abstürze dieses
+Anlaufs waren meine, nicht die der Portierung – und der zweite sah dem
+gesuchten zum Verwechseln ähnlich, weil er ebenfalls in der Speicherverwaltung
+landete. Ohne den Bezugspunkt im Absturzbericht wäre das kaum auseinanderzu-
+halten gewesen.
+
+*Unverändert offen bleibt der ursprüngliche Befund:* ein Data Abort in
+`_malloc_r` **ohne** jedes Wächterwerkzeug, aufgetreten vor diesem Anlauf.
+
+---
+
+## 2026-08-11 – Touch läuft, und ein Fehler verschiebt sich statt zu verschwinden
+
+**Befund 1 – Touch trägt.** Berührungen werden als `FlutterPointerEvent`
+zugestellt, ein `FilledButton` reagiert und zählt hoch. Der eigentliche Aufwand
+lag nicht im Auslesen, sondern in der Zustandsverfolgung: Der Touchscreen
+meldet, welche Finger *gerade* aufliegen, Flutter erwartet `kDown` → `kMove`* →
+`kUp`. Wer die Momentaufnahme ungefiltert weiterreicht, erzeugt bei jedem Frame
+ein neues `kDown` – die Berührung endet nie, und keine Schaltfläche reagiert.
+Verglichen wird über `finger_id`.
+
+Zwei Details, die man übersieht: `buttons` muss gesetzt sein, solange der
+Finger aufliegt (sonst ist `kMove` eine Bewegung ohne Kontakt, Wischen
+funktioniert nicht), und der Zeitstempel gehört in Mikrosekunden aus
+`FlutterEngineGetCurrentTime()`, damit die Geschwindigkeitsberechnung für
+Gesten stimmt.
+
+Als Prüfstein bewusst ein `FilledButton` statt eines `GestureDetector`: Er
+durchläuft Treffererkennung, Gestenerkennung, Zustandswechsel und Neuzeichnen.
+Ein Pfad, bei dem nur `kDown` ankommt, würde damit auffallen.
+
+**Befund 2 – der Ausnahmebehandler hatte selbst zu wenig Stack.** Der erste
+Touch-Absturz hinterließ *keinen* Bericht, obwohl der Behandler eingebunden
+war. libnx gibt ihm 1 KB (`nx/source/runtime/init.c:28`, schwach gebunden);
+unser Behandler formatiert darin über ein Dutzend Zeilen, und der Logger legt
+seinen Puffer ebenfalls dort ab. Er ist beim Berichten überlaufen. Jetzt 16 KB.
+
+*Dasselbe Muster wie bei den drei stummen Meldewegen, eine Ebene tiefer: Nicht
+das Programm schwieg, sondern das Werkzeug, das es zum Sprechen bringen sollte.*
+
+**Befund 3 – und der wiegt am schwersten.** Nach der Stack-Vergrößerung ist der
+Touch-Absturz **weg**. Die einzige Änderung war ein größeres globales Array.
+Das kann keinen Fehler im Eingabepfad reparieren – es verschiebt die
+Speicherlage.
+
+Zusammen mit dem Data Abort in `_malloc_r` ergibt das eine Erklärung für
+alles bisher Beobachtete:
+
+> Es gibt **eine** Speicherbeschädigung. Sporadische Abstürze an wechselnden
+> Stellen, der Absturz in malloc und ein Absturz beim Antippen, der nach einer
+> BSS-Änderung verschwindet, sind keine unabhängigen Fehler, sondern
+> Ausprägungen desselben – je nachdem, was zufällig neben dem beschädigten
+> Bereich liegt.
+
+**Eingegrenzt ist es damit auf gewöhnliche `malloc`-Blöcke:** Die Wächter um
+die Blöcke der Dart-VM haben in keinem Lauf angeschlagen. Die großen,
+ausgerichteten Allokationen sind also nicht betroffen.
+
+*Konsequenz für die Bewertung künftiger Läufe:* Ein sauberer Durchlauf beweist
+hier nichts. Solange die Ursache nicht gefunden ist, kann jede Änderung an
+Größen, Reihenfolgen oder Puffern das Symptom verschieben – in beide
+Richtungen.
+
+---
+
+## 2026-08-11 – Der Absturzbericht trägt: es ist `_malloc_r`
+
+**Befund:** Erster Absturz, der einen verwertbaren Bericht hinterlassen hat.
+Der Ausnahmebehandler aus `crash_handler_horizon.cpp` hat gegriffen:
+
+```text
+=== ABSTURZ: Data Abort o.ae. (error_desc=0x101) ===
+  PC  = 0x1bef3149b8
+  LR  = 0x1bef3147fc
+  FAR = 0x5b943f4048   (angefasste Adresse)
+  Bezugspunkt: __libnx_exception_handler laeuft auf 0x1bee8386f0
+```
+
+Aufgelöst über die Modulbasis (`Laufzeitadresse − ELF-Adresse des Handlers`,
+Skript: `build-logs/resolve-crash.sh`): **PC und LR liegen beide in
+`_malloc_r`** – newlibs Speicherverwaltung.
+
+Damit ist der Fehler zum ersten Mal benannt. Ein Data Abort *in* malloc heißt
+in aller Regel, dass dessen Verwaltungsstrukturen beschädigt sind: Der Schaden
+entsteht früher als der Knall, und wo es knallt, hängt davon ab, welche
+Allokation als erste über die kaputte Stelle stolpert. **Das erklärt die
+Sporadik und die wechselnden Absturzstellen** der vergangenen Läufe besser als
+jede bisherige Vermutung.
+
+Passend dazu die Register: `FAR` liegt vier Bytes hinter `X3` – das Bild eines
+Freilisten-Zeigers, der ins Leere zeigt.
+
+**Was damit *nicht* geklärt ist:** wer den Heap beschädigt. Geprüft und
+ausgeschlossen ist der naheliegendste Verdächtige, der Destruktor in
+`virtual_memory_horizon.cc`: Er gibt `reserved_.pointer()` frei, und weil
+`FreeSubSegment()` ehrlich `false` meldet, lässt `Truncate()` `reserved_`
+unverändert – der Zeiger bleibt also der, den `memalign` geliefert hat.
+
+**Beobachtung, die die Suche eingrenzt:** Mit der reinen `dart:ui`-Anwendung
+lief es über viele Läufe stabil, mit dem Framework kracht es früh. Das
+Framework alloziert um Größenordnungen mehr. Ein Schaden, der lange unentdeckt
+bleibt, wird damit wahrscheinlicher gefunden – es muss also nicht am Framework
+selbst liegen.
+
+**Werkzeug für den nächsten Schritt:** `build-logs/resolve-crash.sh` nimmt den
+Bezugspunkt und beliebig viele Adressen aus dem Bericht und gibt Funktion und
+Quellzeile aus. Der Fatal-Screen der Konsole bleibt unbrauchbar – seine
+Startadresse passt nicht zur NRO.
+
+---
+
+## 2026-08-11 – `runApp()` läuft, und zwei Dinge standen im Weg
+
+**Ergebnis:** Eine gewöhnliche Flutter-Anwendung läuft auf der Konsole –
+`MaterialApp`, `Scaffold`, Theme aus `ColorScheme.fromSeed`,
+`AnimationController` am Ticker, Material-Widgets, Icon-Schriftart. Damit ist
+der Weg von `dart:ui` zum vollständigen Framework offen.
+
+### Paketauflösung
+
+`dart:ui` steckt in der Plattform-Dill und ist ohne Weiteres auffindbar;
+`package:flutter` liegt als Quellpaket im SDK und wird nur über
+`.dart_tool/package_config.json` gefunden. Statt die Datei von Hand zu
+schreiben, erzeugt ein minimales `pubspec.yaml` in `examples/ui_app/dart` sie
+über `flutter pub get`. `gen_kernel` bekommt sie über `--packages`.
+
+Größenordnung: Kernel 5 → 22 MB, Assembly 150.948 → 744.683 Zeilen, NRO
+14,2 → 16,8 MB.
+
+*Falle, die dabei entschärft wurde:* `build-ui-app.ps1` erzeugte die Assembly
+noch mit dem `gen_snapshot` aus den Android-Artefakten – genau dem, der seit
+dem Hash-Befund nicht mehr passt. Das Skript erzeugt jetzt nur noch den Kernel
+und verweist auf `rebuild-all.sh`.
+
+### `defaultTargetPlatform` kennt "horizon" nicht
+
+```text
+Unhandled Exception: Unknown platform.
+horizon was not recognized as a target platform.
+#0  defaultTargetPlatform (package:flutter/src/foundation/_platform_io.dart:39)
+#3  new FocusManager (…/focus_manager.dart:1651)
+#5  WidgetsBinding.initInstances (…/binding.dart:475)
+```
+
+Die Engine lief, die Isolate lief, der Bildschirm blieb schwarz: Das Framework
+scheiterte beim Aufbau des `FocusManager`. Der vorgesehene Ausweg
+`debugDefaultTargetPlatformOverride` greift nur unter `kDebugMode` – wir bauen
+Product.
+
+**Konsequenz:** `Platform::OperatingSystem()` meldet für Horizon `"linux"`
+(`runtime/bin/platform.h`). Bewusst **nicht** geändert wurde
+`kHostOperatingSystemName` selbst – der Name steht im Merkmalsstring des
+Snapshots und in `target_abi_name`, dort ist "horizon" richtig. Geändert wird
+nur, was die Dart-Anwendung sieht.
+
+`"linux"` ist dabei die ehrlichste der auswählbaren Antworten: Die Portierung
+bildet Horizon ohnehin durchgängig auf den POSIX-Zweig ab, und
+`TargetPlatform.linux` bedeutet im Framework „Desktop-artig" – Fokus über
+Tastatur und Steuerkreuz statt mobiler Gestenannahmen, was für eine Konsole
+mit Controller passt.
+
+### Der Applet-Modus ist zu klein – und das erklärt mehr als diesen Fehler
+
+Mit dem Framework schlug `pthread_create` fehl
+(`FML_CHECK` in `fml/thread.cc:80`); jeder Engine-Thread will 2 MB Stack, und
+libnx holt sie aus dem Prozess-Heap. Die Messung direkt vor
+`FlutterEngineInitialize`:
+
+| Startweg | Applet-Typ | Prozessspeicher |
+|---|---|---|
+| Album (Applet) | 2 | **380 MB** |
+| Spiel + R (Anwendung) | 0 | **3189 MB** |
+
+**Damit ist eine Zahl aus Meilenstein 1 zu korrigieren:** Dort steht „3007 MB
+gesamt, 243 MB belegt – und zwar im Applet-Modus". Der Applet-Modus hat
+tatsächlich 380 MB; die damalige Messung muss eine andere Größe erfasst haben.
+
+Zur Lesart der Zahlen: `InfoType_UsedMemorySize` meldet im Anwendungsmodus
+3185 von 3189 MB als belegt. Das ist **keine** Auslastung, sondern libnx'
+Heap-Reservierung – der Heap ist da und weitgehend leer. Aussagekräftig für
+freien Platz ist er nicht.
+
+**Der Verdacht, der sich damit aufdrängt:** Die sporadischen Abstürze vom
+Vortag könnten Speichermangel gewesen sein. Alle Läufe liefen im Applet-Modus,
+und 137 MB frei müssen für Engine-Threads, Dart-Heap, Skia-Puffer und
+Framebuffer reichen – mal geht es aus, mal nicht, an wechselnden Stellen.
+Belegt ist das nicht, es passt nur auffällig gut. Der Absturzbericht steht
+bereit, falls es im Anwendungsmodus wiederkommt.
+
+**Praktische Folge für alles Weitere:** Getestet wird im Anwendungsmodus
+(hbmenu über ein Spiel mit gehaltener R-Taste starten). Für Referenz-App als
+Zielfall ist das ohnehin die einzig sinnvolle Betriebsart – Videopuffer
+brauchen mehr als 137 MB.
+
+---
+
+## 2026-08-11 – Korrektur: Die Marken waren nicht die Ursache
+
+**Der Eintrag unten ist in seiner Schlussfolgerung falsch.** Er stellt fest,
+mit Debug-Marken laufe der Start durch und ohne sie nicht, und leitet daraus
+ein Zeitverhalten ab. Grundlage waren zwei Läufe – einer mit, einer ohne.
+
+Ein dritter Lauf ohne Marken lief vollständig durch: `kSuccess`, alle sechs
+Schriften, Hauptschleife. Einzige Änderung seither ist der Absturzbericht, und
+der kostet zur Laufzeit nichts – er greift erst, wenn schon etwas kaputt ist.
+
+**Was bleibt:** Der Fehler tritt **sporadisch** auf. Über seine Häufigkeit ist
+nichts bekannt, über einen Auslöser ebenfalls nichts. Die Beobachtungen bisher:
+zwei Abstürze beim Start an *verschiedenen* Stellen, einer beim Beenden,
+dazwischen mehrere vollständige Läufe.
+
+*Regel, gegen die ich selbst verstoßen habe:* Aus zwei Läufen wird keine
+Ursache. Bei einem sporadischen Fehler ist die naheliegende Erklärung meist
+die, die man zuletzt geändert hat – und genau deshalb ist sie verdächtig, nicht
+belegt. Wer sie festschreibt, sucht danach an der falschen Stelle weiter.
+
+**Konsequenz für das Vorgehen:** Statt weiterer Marken – die das Zeitverhalten
+verändern und deren Wirkung, wie sich zeigt, nicht einmal reproduzierbar ist –
+liegt jetzt ein Ausnahmebehandler im Programm
+(`embedder/src/platform/crash_handler_horizon.cpp`). Er kostet nichts, bis es
+kracht, und liefert dann PC, LR, SP, die angefasste Adresse und einen
+Bezugspunkt zum Auflösen. Der nächste Absturz sagt uns, wo er sitzt, statt uns
+raten zu lassen.
+
+---
+
+## 2026-08-10 – Die Instrumentierung hielt den Start zusammen
+
+> **Überholt, siehe Eintrag darüber.** Die hier gezogene Schlussfolgerung hat
+> sich nicht bestätigt. Der Befund selbst – zwei Läufe, unterschiedliches
+> Verhalten – bleibt richtig, die Erklärung nicht.
+
+**Befund:** Nach dem Ausbau der Debug-Marken stürzte der Start ab. Derselbe
+Stand mit `TRACE=1` neu gebaut läuft durch – `kSuccess`, alle sechs Schriften,
+Hauptschleife. Zwei Bauten, ein Quellstand, unterschiedliches Verhalten:
+
+| Bau | Verhalten |
+|---|---|
+| mit Marken | läuft durch |
+| ohne Marken | Absturz nach dem Konstruktor von `EventHandlerImplementation` |
+
+Jede Marke schreibt über TCP. Das kostet Millisekunden an genau den Stellen,
+an denen Threads starten. **Es ist also ein Rennen, kein Logikfehler** – und
+die Marken haben es die ganze Zeit zugedeckt.
+
+Dazu passt, was vorher unerklärlich schien: Zwei frühere Abstürze lagen an
+*verschiedenen* Stellen, und ein Lauf dazwischen war sauber. Das war kein
+Messfehler und kein unvollständiger Upload, wie zwischenzeitlich vermutet,
+sondern dasselbe Rennen mit anderem Ausgang.
+
+**Verdacht** (`bin/eventhandler.cc:22-36`):
+
+```cpp
+event_handler = new EventHandler();
+event_handler->delegate_.Start(event_handler);   // Poll-Thread startet
+if (!SocketBase::Initialize()) { ... }           // erst danach
+```
+
+Der Poll-Thread läuft sofort los und ruft `poll()` auf dem
+Loopback-Weckkanal, während der Hauptthread noch bei `SocketBase::Initialize()`
+ist. Unter Linux fällt das nicht auf, weil dort praktisch nichts passiert; auf
+Horizon hängt der gesamte Socket-Stack an einem Systemdienst.
+
+Zu prüfen wäre die Reihenfolge – `SocketBase::Initialize()` vor den
+Thread-Start. **Wichtig für den Test: Er ist nur mit ausgeschalteten Marken
+aussagekräftig**, weil der Fehler sonst nicht auftritt.
+
+**Nachtrag – es betrifft auch das Beenden.** Im selben Lauf (mit Marken, Start
+sauber) stürzte die Konsole beim Plus-Druck ab. Dieselbe Stelle war heute
+Abend schon einmal in Ordnung, mit `shutdown_dart_vm_when_done = true` und
+ohne die Änderungen am Instrumentierungsumfang. Der Abbau geht denselben Weg
+wie der Aufbau, nur rückwärts: `Dart_Cleanup` → `EventHandler::Stop()` →
+Weckmeldung über den Loopback-Kanal → der Poll-Thread beendet sich und meldet
+`NotifyShutdownDone`, worauf der Hauptthread wartet.
+
+Damit steht der Verdacht nicht mehr nur auf der Reihenfolge in
+`EventHandler::Start`, sondern auf dem **Lebenszyklus des Poll-Threads und
+seines Weckkanals** insgesamt. Beide Enden über einen einzigen Socket zu
+synchronisieren, dessen Dienst selbst auf- und abgebaut wird, ist die Stelle,
+an der beides zusammenläuft.
+
+Die Fassung ohne Weckdeskriptor, die als Rückfall in
+`eventhandler_horizon.cc` steht und bisher nie zum Zug kam, wäre hier
+möglicherweise die robustere Wahl: Sie kommt ohne Socket aus und pollt mit
+einer Zeitschranke. Das ist zu prüfen, nicht anzunehmen – aber es ist der
+naheliegende Gegenentwurf, falls sich der Kanal als Ursache bestätigt.
+
+**Was daran über das Vorgehen zu lernen ist:** Instrumentierung verändert das
+Verhalten, das sie beobachten soll. Heute hat sie erst einen Fehler sichtbar
+gemacht (drei stumme Kanäle) und dann einen anderen verdeckt. Ein Baum gilt
+deshalb erst als geprüft, wenn er **ohne** Marken gelaufen ist – der Ausbau ist
+keine Kosmetik, sondern der eigentliche Test.
+
+---
+
+## 2026-08-10 – Systemschriften: gemessen statt geglaubt
+
+**Befund:** Auf Hardware erschienen die Rechtecke, aber kein Text – genau die
+Aufteilung, für die die Textzeile in `examples/ui_app/dart/main.dart` gedacht
+war. Ursache: `txt/BUILD.gn` wählt die Plattformdatei über eine `is_*`-Kette,
+und Horizon fiel in den `else`-Zweig auf `txt/src/txt/platform.cc:19` –
+`SkFontMgr_New_Custom_Empty()`, ein Manager ohne eine einzige Schrift.
+FreeType war gebaut, `SkTypeface_FreeType` gelinkt, der Textpfad vollständig.
+Es gab nur nichts zu setzen.
+
+**Konsequenz:** Die Konsole bringt eigene Schriften mit, erreichbar über den
+Dienst `pl:u` (`plGetSharedFontByType`). Dieselbe Aufteilung wie bei den
+Stackgrenzen und der Logsenke:
+
+- `embedder/src/platform/fonts_horizon.cpp` öffnet den Dienst und reicht die
+  sechs Schnitte durch – Standard zuerst, damit sie Vorgabefamilie wird, dann
+  die CJK-Schnitte, zuletzt die Nintendo-Sonderzeichen. Ohne Kopie: Der
+  Speicher gehört dem System und bleibt gültig.
+- `txt/src/txt/platform_horizon.cc` baut daraus `SkFontMgr_New_Custom_Data`,
+  ohne je einen libnx-Header zu sehen.
+- `skia/BUILD.gn` braucht dafür `skia_enable_fontmgr_custom_embedded = true` –
+  ohne das existiert `SkFontMgr_New_Custom_Data` nicht einmal als Symbol.
+
+**Der eigentliche Befund betrifft das Vorgehen.** Ich war überzeugt, dass
+Nintendo die Schriften im **BFTTF**-Format liefert, also nicht als rohes TTF,
+und hätte fast eine Umwandlung eingebaut. Statt darauf zu bauen, protokolliert
+die Embedder-Seite Größe und die ersten acht Bytes jeder Schrift. Auf Hardware:
+
+```text
+Schrift 1: 7848200 Bytes, Kopf 00 01 00 00 00 10 01 00
+Schrift 2:  123912 Bytes, Kopf 00 01 00 00 00 0f 00 80
+Schrift 5:  180236 Bytes, Kopf 00 01 00 00 00 0d 00 80
+```
+
+`00 01 00 00` ist die TrueType-Signatur. **Die Daten sind rohes TTF**, eine
+Umwandlung hätte sie zerstört. Eine verbreitete Auskunft ist kein Beleg, und
+acht Bytes im Protokoll kosten weniger als ein halber Zyklus.
+
+**Nebenbefund:** In `skia/BUILD.gn` standen zwei `is_horizon`-Blöcke – anders
+als bei den GN-Duplikaten von vorhin *nicht* identisch, sondern eine ältere und
+eine erweiterte Fassung. GN wertet beide aus, die spätere gewinnt; der erste
+war toter Code, der beim Lesen in die Irre führt. Solche Reste sind
+gefährlicher als exakte Kopien, weil sie plausibel aussehen.
+
+---
+
+## 2026-08-10 – `leak_vm` ist auf einer Konsole keine harmlose Voreinstellung
+
+**Befund:** Die Konsole stürzte beim Beenden ab, obwohl `main()` bis zur
+letzten Zeile durchlief – `Shutdown ...` und `ui_app beendet` standen beide im
+Protokoll. Der Fehler lag also in der Abbauphase nach `return 0`.
+
+Ein Messlauf hat die naheliegende Erklärung ausgeschlossen: drei Sekunden
+Wartezeit nach `FlutterEngineShutdown`, mit offener Logsenke. **Keine einzige
+Meldung** – kein VM-Thread allokierte noch, und das Freigeben des Framebuffers
+war ebenfalls unschädlich.
+
+Damit rückte ein Thread in den Blick, der *wartet* statt zu arbeiten:
+
+```cpp
+// common/settings.h:278
+bool leak_vm = true;
+// embedder.cc:2079
+settings.leak_vm = !SAFE_ACCESS(args, shutdown_dart_vm_when_done, false);
+```
+
+`FlutterEngineShutdown` baut die Shell ab, lässt die Dart-VM aber stehen –
+gedacht als Warmstart für Embedder, die die Engine mehrfach starten. Damit
+läuft `Dart_Cleanup` nie, also auch nicht `EventHandler::Stop()`, und dessen
+Poll-Thread hängt weiter in `poll()` auf dem Loopback-Weckkanal. Beim
+geordneten Abbau der NRO verschwindet der Socket-Dienst unter ihm weg.
+
+**Konsequenz:** `project.shutdown_dart_vm_when_done = true`. Auf Hardware
+bestätigt: sauberer Rücksprung ins hbmenu.
+
+**Was daran verallgemeinerbar ist:** Auf Linux, Android und iOS ist `leak_vm`
+folgenlos, weil `exit()` den Prozess beendet und das System aufräumt. Eine
+Homebrew-NRO wird dagegen geordnet abgebaut. Voreinstellungen, die anderswo
+nur Aufräumarbeit sparen, können hier zum Fehler werden – dieselbe Klasse wie
+`GetCachesDirectory`, nur mit umgekehrtem Vorzeichen.
+
+**Zum Vorgehen:** Der Messlauf hat nichts repariert und war trotzdem der
+entscheidende Schritt – er hat die Hypothese „weiterlaufende VM-Threads
+allokieren" widerlegt und damit den Blick auf einen *wartenden* Thread
+gelenkt. Dass die Logsenke dabei bis zuletzt offen blieb, war Absicht: Vorher
+wurde sie geschlossen, bevor der Abbau begann, und hätte jede Meldung aus
+genau der Phase verschluckt, in der es kracht.
+
+---
+
+## 2026-08-10 – Der Snapshot muss aus demselben Baum kommen wie die VM
+
+**Befund:** Mit angeschlossenem `FML_LOG` kam der Fehler im Klartext:
+
+```text
+Wrong full snapshot version, expected '0150713ccc165a92bb03706c55150060'
+                            found    '78da37fed6bf1489361a312568249f3f'
+```
+
+`dart/tools/make_version.py:20-45` bildet `Version::SnapshotString()` als MD5
+über **15 Quelldateien** – unter anderem `dart.cc`, `app_snapshot.cc`,
+`image_snapshot.cc`, `object.h`, `raw_object.h`, `snapshot.h`. Die Portierung
+fasst mehrere davon an; schon der Horizon-Zweig in `Dart::VersionString`
+genügt. Damit ist jeder fremd erzeugte Snapshot ungültig.
+
+Der zweite Grund wiegt schwerer und gilt unabhängig vom Hash: Wir bauen mit
+`dart_use_compressed_pointers=false`, der `gen_snapshot` aus den
+Android-arm64-Artefakten erzeugt Snapshots **mit** Compressed Pointers. Selbst
+bei passendem Hash hätte die Merkmalsprüfung ihn zu Recht abgelehnt.
+
+**Damit ist der Shortcut aus Meilenstein 1b erledigt.** „gen_snapshot muss nicht
+selbst gebaut werden" galt für den *Ladeweg* – Assembly erzeugen, assemblieren,
+linken, Magic prüfen. Für die *Ausführung* gilt es nicht. Der Unterschied war
+in Meilenstein 1b ausdrücklich vermerkt („Was das nicht zeigt: dass der
+Snapshot läuft"), aber die Konsequenz für gen_snapshot war nicht gezogen.
+
+**Konsequenz:** `clang_x64/gen_snapshot_product` aus demselben Checkout, mit
+denselben `args.gn`. Das Ziel existierte bereits in der Konfiguration, Clang
+liegt in `flutter/buildtools`. Zwei Lücken standen im Weg, beide in Code, den
+die AOT-Runtime nie übersetzt – sie *liest* Snapshots, sie schreibt keine:
+
+- `vm/compiler/ffi/abi.cc:65` – `#error Unknown OS`. Der Mechanismus setzt aus
+  OS- und Architekturnamen einen Enum-Wert `k<OS><Arch>` zusammen. Ein eigener
+  Wert `kHorizonArm64` müsste durch Kernel, Snapshots und alle
+  Vergleichsstellen gereicht werden und würde nichts unterscheiden: Horizon
+  folgt auf arm64 derselben Aufrufkonvention wie Linux (AAPCS64). Also die
+  Linux-ABI benutzen statt eine eigene erfinden.
+- `vm/image_snapshot.cc` – **acht** Weichen über die Form der Assembly-Ausgabe,
+  `UNIMPLEMENTED()` für Unbekanntes. Horizon gehört zur ELF-Gruppe mit
+  `.size`/`.type`; dass devkitA64 genau diese Direktiven übersetzt, war in
+  Meilenstein 1b schon belegt.
+
+Ein dritter Fehler kam beim Linken heraus: `virtual_memory_horizon.cc` war die
+einzige der fünf Horizon-Quellen **ohne** `#if defined(DART_HOST_OS_HORIZON)`.
+Beim Ziel-Build fällt das nie auf, weil dort `virtual_memory_posix.cc` durch
+seinen eigenen Wächter verschwindet. Beim Host-Build ist der Host Linux – beide
+Dateien aktiv, zehn doppelte Symbole.
+
+*Muster:* Ein fehlender Wächter ist auf der Zielplattform unsichtbar. Erst der
+Host-Build deckt ihn auf. Wer eine Plattformdatei anlegt, sollte den Wächter
+nicht als Formsache behandeln.
+
+**Arbeitsregel:** Snapshot und Engine kommen immer aus demselben Stand. Wer
+eine der 15 Hash-Dateien anfasst – auch nur, um eine Debug-Marke zu entfernen –,
+muss `gen_snapshot` **und** Engine neu bauen. Sonst ist der nächste Lauf ein
+Versionskonflikt mit anderen Zahlen.
+
+**Ergebnis:** `… arm64 horizon no-compressed-pointers` im Merkmalsstring des
+Snapshots, `FlutterEngineRunInitialized = kSuccess`, und der blaue Balken aus
+`examples/ui_app/dart/main.dart` läuft über den Bildschirm der Konsole.
+
+---
+
+## 2026-08-10 – Drei stumme Kanäle, drei Fehldiagnosen
+
+**Befund:** Der Absturz in `FlutterEngineRunInitialized` sah dreimal
+hintereinander wie ein harter Speicherzugriffsfehler aus. Dreimal war es ein
+sauber erkannter Fehler, dessen Meldung nur nirgendwo ankam:
+
+| Meldeweg | landet bei | angeschlossen |
+|---|---|---|
+| `OS::Print` / `OS::PrintErr` | TCP-Senke | war schon da |
+| `Syslog::PrintErr` – **hier meldet `FATAL`** (`platform/assert.cc:37`) | `stderr` | fehlte |
+| `FML_LOG` – **hier meldet die Engine** (`fml/logging.cc`) | `stderr` | fehlte |
+
+Auf der Konsole geht `stderr` nirgendwohin. Beide Kanäle enden mit `abort()`
+(`Assert::Fail` bzw. `KillProcess()`), und `abort()` erzeugt den Fatal-Screen
+`2162-0002` – ununterscheidbar von einem echten Data Abort.
+
+**Die falsche Schlussfolgerung stand im Protokoll:** „Die VM stirbt, bevor sie
+etwas zu melden hat." Aus einer ausbleibenden Meldung darf man das nur
+schließen, wenn belegt ist, dass der Kanal trägt. Belegt war nur, dass *ein*
+Kanal trägt – und die aufschlussreichsten Meldungen liefen über die anderen
+beiden.
+
+*Regel:* Ein Diagnosekanal ist erst dann einer, wenn jede Klasse von Meldungen
+darin ankommt. Dieselbe Lehre wie beim Zähler in `relink-example.sh`, der nur
+`undefined reference` kannte und bei jeder anderen Fehlerart Erfolg meldete.
+
+**Nachtrag zum selben Muster:** Auch `relink-example.sh` sah noch weg – es
+zählte Linkerfehler über einem Protokoll, in dem `make` schon an einem
+Compilerfehler gescheitert war, und meldete „0 undefinierte Symbole", während
+die alte NRO unverändert liegen blieb. Prüft jetzt den Exit-Code.
+
+---
+
+## 2026-08-10 – `socketpair` ist ein Attrappensymbol, Loopback trägt
+
+**Befund:** Der erste Lauf mit angeschlossener Syslog-Senke lieferte sofort eine
+verwertbare Meldung – die erste, die je aus der Dart-VM auf der Konsole
+herauskam:
+
+```text
+FlutterEngineInitialize = 0 (kSuccess)
+FlutterEngineRunInitialized ...
+runtime/bin/eventhandler_horizon.cc: 55: error:
+    Failed creating socketpair for event handler: 88
+```
+
+`88` ist `ENOSYS`. Die Ursache steht wörtlich in libnx
+(`nx/source/runtime/devices/socket.c:812`):
+
+```c
+int socketpair(int domain, int type, int protocol, int sv[2]) {
+    // Unimplementable, function definition written for compliance
+    errno = ENOSYS;
+    return -1;
+}
+```
+
+**Woher der Fehlschluss kam.** Die Entscheidung „`socketpair()` statt Pipe"
+stützte sich auf eine `nm`-Tabelle über `libnx.a`: `pipe` fehlt, `socketpair`
+ist definiert. Definiert heißt hier aber nur *vorhanden, damit Code linkt*.
+Beim Nebenbefund zu den Semaphoren war dieselbe Frage richtig beantwortet
+worden – dort wurde zusätzlich das Disassemblat angesehen und festgestellt, dass
+`sem_init` tatsächlich Argumente prüft und einen Zähler ablegt. Bei
+`socketpair` blieb es bei der Symbolliste.
+
+*Regel:* Ein Symbol in einer Bibliothek belegt Linkbarkeit, nicht Funktion.
+Wo eine Plattformentscheidung daran hängt, muss der Rumpf angesehen werden.
+
+**Konsequenz:** Gebraucht wird nur ein Deskriptor, auf den `poll` warten kann
+und den ein anderer Thread beschreibt. Zwei Fassungen, und welche greift,
+entscheidet die Hardware statt einer Vorabannahme:
+
+1. Ein selbst geknüpftes TCP-Paar über `127.0.0.1` – `bind` auf Port 0,
+   `listen`, `connect`, `accept`.
+2. Andernfalls gar kein Weckdeskriptor: Weckmeldungen in ein
+   mutex-geschütztes Fach, und `poll` bekommt eine Schranke von 20 ms.
+
+Der Lauf auf Hardware hat entschieden: **`EventHandler: Weckkanal ueber
+127.0.0.1`** – libnx' bsdsocket-Dienst stellt Loopback zu, Weg 1 trägt. Weg 2
+bleibt als Rückfall stehen und kostet nichts.
+
+Für die Zerlegung von `HandleInterruptFd` in `ProcessInterruptMessage` gab es
+dabei einen zweiten Grund neben dem Fach: Dieselbe Nachrichtenbehandlung wird
+jetzt von zwei Quellen aus gebraucht, und eine Kopie hätte beim nächsten
+Upstream-Abgleich auseinanderlaufen können.
+
+**Nebenbefund:** `pipe()` in `posix_compat_horizon.cpp` stand auf demselben
+toten `socketpair` – bisher unbemerkt, weil es niemand gerufen hat. Das
+Verhalten (`-1` mit `ENOSYS`) war zufällig richtig, der Kommentar daneben
+falsch.
+
+**Was danach kam:** Der Lauf endet unmittelbar nach der Loopback-Zeile, wieder
+ohne Meldung. Da ein `FATAL` jetzt sichtbar wäre, ist es erneut ein harter
+Speicherzugriffsfehler. Übrig bleiben zwei Schritte in `EventHandler::Start`
+(`bin/eventhandler.cc:22-36`): der Start des Poll-Threads und
+`SocketBase::Initialize`. Nicht die Ursache ist die Stackgröße –
+`bin::Thread::GetMaxStackSize()` liefert 1 MB und damit die von libnx
+verlangte 4K-Ausrichtung.
+
+---
+
+## 2026-08-10 – Der stumme Absturz: zwei Fehler, einer davon im Meldeweg
+
+**Befund 1 – `GetCurrentStackBounds` = `false` ist ein Abbruch, kein Rückfall.**
+Der Vermerk in `os_thread_horizon.cc` („Die VM wertet false als unbekannt aus …
+fällt auf konservativere Verfahren zurück") stimmt für die gepinnte Dart-Fassung
+nicht. `vm/os_thread.cc:49-52`:
+
+```cpp
+  // Try to get accurate stack bounds from pthreads, etc.
+  if (!GetCurrentStackBounds(&stack_limit_, &stack_base_)) {
+    FATAL("Failed to retrieve stack bounds");
+  }
+```
+
+Der Aufruf steht im Konstruktor **jedes** `OSThread`. Der erste entsteht in
+`OSThread::Init()` (`vm/dart.cc:374`), also innerhalb von `Dart_Initialize`.
+
+**Befund 2 – die VM startet erst in `RunInitialized`, nicht in `Initialize`.**
+Das war die Stelle, an der die bisherige Eingrenzung zu kippen drohte: Wenn
+`FlutterEngineInitialize` `kSuccess` meldet, kann darin kein FATAL gefallen
+sein. Die Kette zeigt, dass beides zusammenpasst –
+`FlutterEngineInitialize` baut nur Settings, Callbacks und die
+`RunConfiguration`; `FlutterEngineRunInitialized` beginnt mit
+`EmbedderEngine::LaunchShell()` (`embedder.cc:2476`), und erst das führt über
+`Shell::Create` → `InferVmInitDataFromSettings` → `DartVMRef::Create` →
+`Dart_Initialize` (`runtime/dart_vm.cc:441`) zur VM. Der FATAL ist damit das
+Erste, was in `RunInitialized` überhaupt passieren kann – genau dort, wo der
+Absturz gemessen wurde, und vor jeder Heap-Anforderung.
+
+**Befund 3 – der Meldeweg der VM war nie angeschlossen.** `FATAL` läuft über
+`Assert::Fail` → `DynamicAssertionHelper::Print` → **`Syslog::PrintErr`**
+(`platform/assert.cc:37`) – nicht über `OS::PrintErr`, an dem die TCP-Senke
+hängt. `syslog_linux.cc`, dessen Wächter für Horizon erweitert wurde, schreibt
+mit `vfprintf(stderr, …)`; auf der Konsole geht `stderr` nirgendwohin.
+
+Das entkräftet die bisherige Schlussfolgerung „die VM stirbt, bevor sie etwas zu
+melden hat". Sie hatte etwas zu melden – es gab nur keinen Kanal. Ein
+Diagnosekanal, der die halbe Klasse von Meldungen nicht führt, ist derselbe
+Fehler wie der Zähler in `relink-example.sh`, der nur eine Fehlerart kannte.
+
+**Konsequenz 1 – Syslog auf dieselbe Senke.** `Syslog::VPrint`/`VPrintErr`
+bedienen für Horizon zusätzlich `flutter_libnx_vm_log`, die schwach gebundene
+Funktion des Embedders. Fehlt der Embedder, ist der Zeiger null und es bleibt
+beim bisherigen Verhalten.
+
+**Konsequenz 2 – echte Stackgrenzen.** Der Kernel weiß sie, auch ohne
+`pthread_getattr_np`: `svcQueryMemory` liefert zu einer Adresse die umgebende
+Speicherregion, und für den aktuellen Stackpointer ist das der Stack. Das gilt
+für beide Thread-Arten:
+
+- Nebenläufige Threads laufen auf einem `stack_mirror`, den libnx per
+  `svcMapMemory` einblendet (`nx/source/kernel/thread.c:132`). Die Abbildung
+  umfasst genau Stack, TLS und reent-Struktur.
+- Der Hauptthread bekommt seinen Stack vom Loader, ebenfalls als eigene Region.
+
+Der Aufruf liegt in `embedder/src/platform/stack_bounds_horizon.cpp`, weil
+`<switch.h>` in der Dart-VM Bezeichner kollidieren lässt – dieselbe Trennung wie
+bei `random_horizon.cpp` und der Logsenke. Plausibilität wird geprüft: Der
+Stackpointer muss in der Region liegen und die Region darf nicht größer als
+64 MB sein, sonst wurde etwas anderes getroffen (etwa der ganze Heap) und die
+Funktion sagt ehrlich `false`.
+
+Der Notnagel in `os_thread_horizon.cc` rät dann bewusst in die sichere Richtung –
+256 KB unterhalb des aktuellen Stackpointers. Eine zu hoch angesetzte
+Untergrenze meldet einen Stapelüberlauf zu früh, als kontrollierte
+Dart-Ausnahme; eine zu niedrige übersieht ihn und endet in einem echten
+Speicherzugriffsfehler.
+
+**Was der Fatal-Screen nicht erklärt:** `Assert::Fail` ruft vor `abort()` noch
+`Dart_DumpNativeStackTrace` und `Dart_PrepareToAbort`. Ersteres ist im
+Product-Modus leer (`dart_api_impl.cc:7262-7266`, der Rumpf hängt an
+`DART_INCLUDE_PROFILER`), Letzteres reicht an `OS::PrepareToAbort` durch. Ein
+sauberes `abort()` sollte also kein Data Abort sein. Ob `2168-0002` vom
+`abort()`-Pfad kommt oder von etwas dahinter, sagt erst der nächste Lauf – jetzt
+mit sichtbarer VM-Meldung.
+
+---
+
 ## 2026-08-10 – Von 100 auf 30 offene Symbole: dart:io steht
 
 **Befund:** Die Gruppen aus der Landkarte ließen sich fast alle so abarbeiten, wie sie

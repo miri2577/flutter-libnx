@@ -1,0 +1,27 @@
+# Minimales Paket, nur damit `flutter pub get` eine Paketauflösung erzeugt.
+#
+# Der Kernel-Erzeuger braucht sie, sobald `package:flutter` im Spiel ist:
+# `dart:ui` steckt in der Plattform-Dill und ist ohne Weiteres auffindbar, das
+# Framework dagegen liegt als Quellpaket im SDK und muss über
+# `.dart_tool/package_config.json` gefunden werden.
+#
+# Bewusst kein Flutter-Anwendungsprojekt mit `flutter create`: Wir brauchen
+# weder Android- noch iOS-Gerüst, keine Assets und keine Tests – nur die
+# Auflösung.
+name: flutter_libnx_ui_app
+description: dart:ui- und Framework-Beispiel für den Horizon-Embedder
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  # Bindet die Schriftart "MaterialIcons" ein. Genau so fordern echte Projekte
+  # sie an – vorher wurde sie hier von Hand kopiert und ins FontManifest
+  # geschrieben, was für jede fremde App wieder falsch gewesen wäre.
+  uses-material-design: true

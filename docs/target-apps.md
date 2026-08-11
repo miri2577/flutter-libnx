@@ -112,6 +112,40 @@ Homebrew heraus im Applet-Modus (hbmenu über Album) überhaupt startet, und wel
 Speichergrenzen dort gelten. Das sind Hardwarefragen, keine Header-Fragen – sie gehören in
 ein kleines Testprogramm, sobald die Toolchain steht.
 
+## Der Bauweg muss ebenso allgemein sein wie der Embedder (2026-08-11)
+
+Bis hierher wurde das Beispiel von Hand zusammengesetzt: `pubspec.yaml` eigens
+angelegt, `AssetManifest.json` und `FontManifest.json` selbst geschrieben, die
+Icon-Schrift von Hand kopiert. Das trägt für **ein** Beispiel und bricht bei der
+ersten Anwendung, die eigene Schriften, Bilder oder Assets aus Paketen
+mitbringt.
+
+Wie es auffiel: Auf dem Bildschirm stand an jeder Icon-Stelle das
+Ersatzkästchen mit Kreuz. `Icons.touch_app` ist keine Grafik, sondern ein
+Zeichen der Schriftart „MaterialIcons" – ein Asset, das ein gewöhnliches
+`flutter build` mitliefert und unser handgeschriebenes Manifest nicht kannte.
+Genau diese Klasse Fehler wiederholt sich bei jedem Projekt neu, solange die
+Assets nicht aus dem Projekt selbst kommen.
+
+**Zielbild:** Ein Werkzeug nimmt ein unverändertes Flutter-Projekt und liefert
+eine `.nro`:
+
+| Schritt | Werkzeug | Ergebnis |
+|---|---|---|
+| Assets | `flutter build bundle` im Projekt | `flutter_assets/` mit beiden Manifesten, Schriften und Projekt-Assets |
+| Kernel | `gen_kernel_aot` mit `--packages` aus dem Projekt | `app.dill` |
+| Snapshot | eigenes `clang_x64/gen_snapshot_product` | `app_aot.s` |
+| NRO | devkitA64, Embedder, RomFS | `.nro` |
+
+Nur der dritte Schritt ist projektspezifisch gebaut; die anderen drei sind
+Standardwerkzeuge oder mechanisch.
+
+**Erster Befund dazu:** `flutter build bundle` verlangt die übliche
+Projektstruktur mit `lib/main.dart`. Unser Beispiel legt `main.dart` daneben und
+scheitert daran – ein Hinweis darauf, dass die Beispiele dem folgen sollten, was
+echte Projekte mitbringen, statt eigene Wege zu gehen. Sonst prüft der Bauweg
+etwas, das später niemand so verwendet.
+
 ## Was daraus folgt
 
 1. Der Embedder bleibt allgemein. Nichts an Referenz-App rechtfertigt Sonderwege in der Engine.

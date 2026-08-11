@@ -153,6 +153,47 @@ def write_toolchain_files(src: str) -> None:
         print(f"    geschrieben: build/toolchain/horizon/{name}")
 
 
+# Startmarken der Fehlersuche. Siehe main().
+TRACE = os.environ.get("TRACE", "0") == "1"
+
+
+def trace_mark(path: str, old: str, new: str, label: str) -> bool:
+    """Fuegt eine Debug-Marke ein - oder nimmt sie wieder heraus.
+
+    Damit laesst sich zwischen instrumentiertem und sauberem Baum wechseln,
+    ohne den Checkout neu aufzusetzen. Ohne diesen Weg bliebe nur, die
+    Einfuegungen von Hand zu suchen, und genau dabei bleibt erfahrungsgemaess
+    etwas liegen.
+
+    Eigene Logik statt replace_once, aus einem Grund, der hier schon zweimal
+    Zeit gekostet hat: replace_once erkennt den erledigten Zustand daran, dass
+    der Ersatztext im Ziel steht. Beim Zurueckbauen ist der Ersatztext der
+    *markenlose* - und der ist immer vorhanden, weil er ein Teilstueck des
+    markierten ist. Die Pruefung meldete deshalb "schon gepatcht" und
+    entfernte nichts.
+    """
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    if TRACE:
+        if new in text:
+            print(f"    schon gesetzt: {label}")
+            return False
+        if old not in text:
+            print(f"    ANKER NICHT GEFUNDEN in {label}", file=sys.stderr)
+            return False
+        result, verb = text.replace(old, new, 1), "gesetzt"
+    else:
+        if new not in text:
+            return False  # Marke war nie da oder ist schon weg.
+        result, verb = text.replace(new, old, 1), "entfernt"
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(result)
+    print(f"    {verb}: {label}")
+    return True
+
+
 def replace_once(path: str, old: str, new: str, label: str) -> bool:
     """Wörtliche Ersetzung. Sicherer als das Herumschneiden an Klammern."""
     with open(path, encoding="utf-8") as handle:
@@ -1167,6 +1208,606 @@ DART_BIN_POSIX_REUSE = (
     "directory_linux.cc",
     "platform_linux.cc",
 )
+
+
+def patch_eventhandler_start_trace(src: str) -> None:
+    """DEBUG-INSTRUMENTIERUNG: EventHandler::Start in Abschnitte zerlegen.
+
+    Der Absturz liegt zwischen dem Konstruktor der Implementierung (dessen
+    Meldung noch ankommt) und der Rueckkehr aus Start(). Dazwischen liegen
+    genau zwei Schritte: der Poll-Thread und SocketBase::Initialize. Je eine
+    Zeile trennt sie in einem einzigen Lauf.
+
+    Nach der Fehlersuche wieder entfernen.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "bin", "eventhandler.cc")
+    trace_mark(
+        path,
+        "  event_handler = new EventHandler();\n"
+        "  event_handler->delegate_.Start(event_handler);\n"
+        "\n"
+        "  if (!SocketBase::Initialize()) {\n"
+        "    FATAL(\"Failed to initialize sockets\");\n"
+        "  }\n",
+        "  event_handler = new EventHandler();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"EventHandler::Start: Poll-Thread wird gestartet\\n\");\n"
+        "#endif\n"
+        "  event_handler->delegate_.Start(event_handler);\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"EventHandler::Start: Poll-Thread laeuft\\n\");\n"
+        "#endif\n"
+        "\n"
+        "  if (!SocketBase::Initialize()) {\n"
+        "    FATAL(\"Failed to initialize sockets\");\n"
+        "  }\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"EventHandler::Start: fertig\\n\");\n"
+        "#endif\n",
+        "dart bin/eventhandler.cc (Start-Instrumentierung)",
+    )
+    trace_mark(
+        path,
+        '#include "bin/eventhandler.h"\n',
+        '#include "bin/eventhandler.h"\n'
+        '#include "platform/syslog.h"\n',
+        "dart bin/eventhandler.cc (syslog.h)",
+    )
+
+
+def patch_dart_init_trace(src: str) -> None:
+    """DEBUG-INSTRUMENTIERUNG: Dart::Init in Abschnitte zerlegen.
+
+    EventHandler::Start laeuft vollstaendig durch, also liegt der Absturz
+    dahinter. Der Aufrufer ist BootstrapDartIo in DartVM::DartVM (dart_vm.cc
+    :301) - und das steht noch VOR Dart_SetVMFlags und Dart_Initialize. Der
+    Abschnitt dazwischen wird hier aufgeteilt, VM-seitig entlang der
+    Initialisierungsreihenfolge von Dart::Init.
+
+    Nach der Fehlersuche wieder entfernen.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "vm", "dart.cc")
+    trace_mark(
+        path,
+        '#include "vm/dart.h"\n',
+        '#include "vm/dart.h"\n'
+        '#include "platform/syslog.h"\n',
+        "dart vm/dart.cc (syslog.h)",
+    )
+    # Der Abschnitt vor OS::Init: Flagpruefung, erster Zugriff auf den
+    # Snapshot, Uebernahme der VM-Flags aus dem Snapshot, FrameLayout.
+    trace_mark(
+        path,
+        "  if (!Flags::Initialized()) {\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: betreten\\n\");\n"
+        "#endif\n"
+        "  if (!Flags::Initialized()) {\n",
+        "dart vm/dart.cc (Init betreten)",
+    )
+    trace_mark(
+        path,
+        "    snapshot = Snapshot::SetupFromBuffer(params->vm_snapshot_data);\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "    Syslog::Print(\"Dart::Init: vor Snapshot::SetupFromBuffer\\n\");\n"
+        "#endif\n"
+        "    snapshot = Snapshot::SetupFromBuffer(params->vm_snapshot_data);\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "    Syslog::Print(\"Dart::Init: SetupFromBuffer fertig\\n\");\n"
+        "#endif\n",
+        "dart vm/dart.cc (SetupFromBuffer)",
+    )
+    trace_mark(
+        path,
+        "  FrameLayout::Init();\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: Snapshot-Flags uebernommen\\n\");\n"
+        "#endif\n"
+        "  FrameLayout::Init();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: FrameLayout fertig\\n\");\n"
+        "#endif\n",
+        "dart vm/dart.cc (FrameLayout)",
+    )
+    trace_mark(
+        path,
+        "  OS::Init();\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: vor OS::Init\\n\");\n"
+        "#endif\n"
+        "  OS::Init();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: OS::Init fertig\\n\");\n"
+        "#endif\n",
+        "dart vm/dart.cc (OS::Init)",
+    )
+    trace_mark(
+        path,
+        "  OSThread::Init();\n"
+        "  Zone::Init();\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: VirtualMemory::Init fertig, jetzt \"\n"
+        "                \"OSThread::Init\\n\");\n"
+        "#endif\n"
+        "  OSThread::Init();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: OSThread::Init fertig (Stackgrenzen \"\n"
+        "                \"stehen)\\n\");\n"
+        "#endif\n"
+        "  Zone::Init();\n",
+        "dart vm/dart.cc (OSThread::Init)",
+    )
+    trace_mark(
+        path,
+        "  TargetCPUFeatures::Init();\n"
+        "  FfiCallbackMetadata::Init();\n",
+        "  TargetCPUFeatures::Init();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: TargetCPUFeatures fertig\\n\");\n"
+        "#endif\n"
+        "  FfiCallbackMetadata::Init();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"Dart::Init: FfiCallbackMetadata fertig\\n\");\n"
+        "#endif\n",
+        "dart vm/dart.cc (CPU/Ffi)",
+    )
+
+
+def patch_dart_platform_name(src: str) -> None:
+    """`Platform.operatingSystem` meldet "linux" statt "horizon".
+
+    Grund: Das Flutter-Framework leitet `defaultTargetPlatform` aus diesem
+    Namen ab (`foundation/_platform_io.dart`) und kennt "horizon" nicht. Es
+    wirft dann beim Aufbau des FocusManager, noch in
+    `WidgetsBinding.initInstances` - der Bildschirm bleibt schwarz, obwohl
+    Engine und Isolate laufen. Der vorgesehene Ausweg
+    `debugDefaultTargetPlatformOverride` greift nur unter `kDebugMode`, und wir
+    bauen Product.
+
+    Warum "linux" die ehrlichste der auswaehlbaren Antworten ist: Die
+    Portierung bildet Horizon ohnehin durchgaengig auf den POSIX-/Linux-Zweig
+    ab - dart:io-Waechter, FFI-Aufrufkonvention, Dateischicht. Und
+    `TargetPlatform.linux` bedeutet im Framework "Desktop-artig": Fokus ueber
+    Tastatur/Steuerkreuz statt mobiler Gestenannahmen, was fuer eine Konsole
+    mit Controller passt.
+
+    Bewusst NICHT geaendert wird `kHostOperatingSystemName` selbst. Der Name
+    steckt auch im Merkmalsstring des Snapshots ("... arm64 horizon
+    no-compressed-pointers") und in `target_abi_name`; dort ist "horizon"
+    richtig und soll es bleiben. Geaendert wird nur, was die Dart-Anwendung
+    sieht.
+
+    Preis: Dart-Code, der `Platform.isLinux` prueft und daraufhin Linux-Pfade
+    annimmt (/tmp, /proc), wird getaeuscht. Auf dieser Plattform gibt es beides
+    nicht - wer danach greift, scheitert also so oder so, nur mit anderer
+    Fehlermeldung.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "platform.h")
+    replace_once(
+        path,
+        "  static const char* OperatingSystem() { return kHostOperatingSystemName; }\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  // Siehe patch-engine-horizon.py, patch_dart_platform_name: Das\n"
+        "  // Flutter-Framework kennt \"horizon\" nicht und wirft beim Aufbau\n"
+        "  // des FocusManager. Nur diese Auskunft an die Dart-Seite wird\n"
+        "  // angepasst - die interne Plattformkennung bleibt \"horizon\".\n"
+        "  static const char* OperatingSystem() { return \"linux\"; }\n"
+        "#else\n"
+        "  static const char* OperatingSystem() { return kHostOperatingSystemName; }\n"
+        "#endif\n",
+        "dart bin/platform.h (OperatingSystem)",
+    )
+
+
+def patch_dart_ffi_abi(src: str) -> None:
+    """Die FFI-ABI-Tabelle des Compilers kennt Horizon nicht.
+
+    Betroffen ist nur gen_snapshot: Die AOT-Runtime enthaelt keinen Compiler,
+    deshalb ist die Stelle erst aufgefallen, als der Snapshot-Erzeuger aus
+    demselben Baum gebaut wurde.
+
+    `DART_TARGET_OS_NAME` setzt einen Enum-Wert der Form k<OS><Arch> zusammen.
+    Ein eigener Wert kHorizonArm64 muesste durch Kernel, Snapshots und alle
+    Vergleichsstellen gereicht werden - und wuerde nichts unterscheiden:
+    Horizon folgt auf arm64 derselben Aufrufkonvention wie Linux (AAPCS64).
+    Deshalb wird die Linux-ABI benutzt statt eine eigene erfunden. Der
+    Anzeigename bleibt davon unberuehrt, der kommt aus
+    kTargetOperatingSystemName.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "vm",
+                        "compiler", "ffi", "abi.cc")
+    replace_once(
+        path,
+        "#elif defined(DART_TARGET_OS_LINUX)\n"
+        "#define DART_TARGET_OS_NAME Linux\n",
+        "#elif defined(DART_TARGET_OS_LINUX)\n"
+        "#define DART_TARGET_OS_NAME Linux\n"
+        "#elif defined(DART_TARGET_OS_HORIZON)\n"
+        "// Gleiche Aufrufkonvention wie Linux auf arm64 (AAPCS64) - siehe\n"
+        "// patch-engine-horizon.py, patch_dart_ffi_abi.\n"
+        "#define DART_TARGET_OS_NAME Linux\n",
+        "dart vm/compiler/ffi/abi.cc (Horizon-ABI)",
+    )
+
+
+def patch_launch_shell_trace(src: str) -> None:
+    """DEBUG-INSTRUMENTIERUNG: der Einstieg in FlutterEngineRunInitialized.
+
+    Der Lauf endet neuerdings vor der ersten bisherigen Marke. Diese hier
+    steht davor und trennt „kommt gar nicht in LaunchShell" von „scheitert in
+    Shell::Create".
+
+    Nach der Fehlersuche wieder entfernen.
+    """
+    path = os.path.join(src, "flutter", "shell", "platform", "embedder",
+                        "embedder_engine.cc")
+    trace_mark(
+        path,
+        "bool EmbedderEngine::LaunchShell() {\n",
+        "bool EmbedderEngine::LaunchShell() {\n"
+        "#if defined(FML_OS_HORIZON)\n"
+        "  dart::Syslog::Print(\"EmbedderEngine::LaunchShell betreten\\n\");\n"
+        "#endif\n",
+        "flutter embedder_engine.cc (LaunchShell)",
+    )
+    trace_mark(
+        path,
+        "  shell_ = Shell::Create(\n",
+        "#if defined(FML_OS_HORIZON)\n"
+        "  dart::Syslog::Print(\"LaunchShell: vor Shell::Create\\n\");\n"
+        "#endif\n"
+        "  shell_ = Shell::Create(\n",
+        "flutter embedder_engine.cc (Shell::Create)",
+    )
+    trace_mark(
+        path,
+        '#include "flutter/shell/platform/embedder/embedder_engine.h"\n',
+        '#include "flutter/shell/platform/embedder/embedder_engine.h"\n'
+        '#include "third_party/dart/runtime/platform/syslog.h"\n',
+        "flutter embedder_engine.cc (syslog.h)",
+    )
+
+
+def patch_txt_platform(src: str, repo: str) -> None:
+    """Eigene Plattformdatei für den Schriftmanager.
+
+    `txt/BUILD.gn` waehlt die Datei ueber eine is_*-Kette; Horizon fiel in den
+    else-Zweig auf `platform.cc`, und der liefert `SkFontMgr_New_Custom_Empty`
+    - einen Manager ohne Schriften. Auf Hardware: Rechtecke ja, Text nein.
+    """
+    import shutil
+
+    files = os.path.join(repo, "patches", "flutter-engine", "files", "txt")
+    base = os.path.join(src, "flutter", "txt", "src", "txt")
+    shutil.copyfile(os.path.join(files, "platform_horizon.cc"),
+                    os.path.join(base, "platform_horizon.cc"))
+    print("    kopiert: txt/src/txt/platform_horizon.cc")
+
+    replace_once(
+        os.path.join(src, "flutter", "txt", "BUILD.gn"),
+        '  } else if (is_win) {\n'
+        '    sources += [ "src/txt/platform_windows.cc" ]\n',
+        '  } else if (is_win) {\n'
+        '    sources += [ "src/txt/platform_windows.cc" ]\n'
+        '  } else if (is_horizon) {\n'
+        '    sources += [ "src/txt/platform_horizon.cc" ]\n',
+        "flutter txt/BUILD.gn (platform_horizon.cc)",
+    )
+
+
+def patch_dart_image_snapshot(src: str) -> None:
+    """Der Assembly-Writer von gen_snapshot kennt Horizon nicht.
+
+    `image_snapshot.cc` entscheidet an acht Stellen ueber die Form der
+    Ausgabe - ELF-artig mit `.size`/`.type`-Direktiven fuer Linux, Android und
+    Fuchsia, ohne sie fuer MachO und Windows, und `UNIMPLEMENTED()` sonst.
+    Horizon gehoert zur ersten Gruppe: Meilenstein 1b hat gezeigt, dass
+    devkitA64 genau diese Direktiven ohne Anpassung uebersetzt.
+
+    Wie bei abi.cc ist die Stelle erst mit gen_snapshot aufgetaucht - die
+    AOT-Runtime schreibt keine Snapshots, sie liest sie nur.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "vm",
+                        "image_snapshot.cc")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    if "DART_TARGET_OS_HORIZON" in text:
+        print("    schon gepatcht: dart vm/image_snapshot.cc")
+        return
+
+    # Zwei Auspraegungen derselben Kette. Die laengere zuerst, damit die
+    # kuerzere nicht in sie hineingreift.
+    long_form = ("    defined(DART_TARGET_OS_FUCHSIA) || "
+                 "defined(DART_TARGET_OS_WINDOWS)\n")
+    short_form = "    defined(DART_TARGET_OS_FUCHSIA)\n"
+    n_long = text.count(long_form)
+    n_short = text.count(short_form)
+    if n_long + n_short == 0:
+        print("    ANKER NICHT GEFUNDEN in dart vm/image_snapshot.cc",
+              file=sys.stderr)
+        return
+
+    text = text.replace(
+        long_form,
+        "    defined(DART_TARGET_OS_FUCHSIA) || "
+        "defined(DART_TARGET_OS_WINDOWS) ||    \\\n"
+        "    defined(DART_TARGET_OS_HORIZON)\n")
+    text = text.replace(
+        short_form,
+        "    defined(DART_TARGET_OS_FUCHSIA) || "
+        "defined(DART_TARGET_OS_HORIZON)\n")
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    print(f"    gepatcht: dart vm/image_snapshot.cc "
+          f"({n_short + n_long} Weichen)")
+
+
+def patch_dart_thread_diagnostics(src: str) -> None:
+    """Den echten Grund fuer einen fehlgeschlagenen Threadstart sichtbar machen.
+
+    `pthread_create` meldet auf dieser Plattform fuer jeden Fehlschlag ENOMEM:
+    `nx/source/runtime/newlib.c:209-213` verwirft den Result-Code. Die Meldung
+    „12 (Not enough space)" hat deshalb ueber Stunden in die falsche Richtung
+    gefuehrt - ein Messprogramm (examples/thread_probe) zeigt, dass 64 Threads
+    mit je 1 MB Stack muehelos gehen.
+
+    Hier wird bei Fehlschlag eine Diagnose im Embedder angestossen, die
+    denselben Aufruf noch einmal direkt ueber libnx macht und den echten
+    Result-Code protokolliert.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime", "bin",
+                        "thread_linux.cc")
+    replace_once(
+        path,
+        "  pthread_t tid;\n"
+        "  result = pthread_create(&tid, &attr, ThreadStart, data);\n"
+        "  RETURN_ON_PTHREAD_FAILURE(result);\n",
+        "  pthread_t tid;\n"
+        "  result = pthread_create(&tid, &attr, ThreadStart, data);\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  if (result != 0 && flutter_libnx_diagnose_thread_failure != NULL) {\n"
+        "    flutter_libnx_diagnose_thread_failure(\n"
+        "        name, static_cast<size_t>(Thread::GetMaxStackSize()));\n"
+        "  }\n"
+        "#endif\n"
+        "  RETURN_ON_PTHREAD_FAILURE(result);\n",
+        "dart bin/thread_linux.cc (Threadfehler-Diagnose)",
+    )
+    replace_once(
+        path,
+        "namespace dart {\nnamespace bin {\n",
+        "// Vom Embedder gestellt; fehlt er, ist der Zeiger null und es bleibt\n"
+        "// bei der nichtssagenden ENOMEM-Meldung.\n"
+        "extern \"C\" __attribute__((weak)) void\n"
+        "flutter_libnx_diagnose_thread_failure(const char* name,\n"
+        "                                      size_t stack_size);\n"
+        "\n"
+        "namespace dart {\nnamespace bin {\n",
+        "dart bin/thread_linux.cc (weak-Deklaration)",
+    )
+
+
+def patch_fml_thread_stack(src: str) -> None:
+    """Kleinere Stacks fuer Engine-Threads.
+
+    Die harte Grenze auf dieser Plattform ist nicht der Speicher insgesamt,
+    sondern der Teil *ausserhalb* des newlib-Heaps: Der Homebrew-Loader
+    reserviert fast alles als Heap und laesst rund 20 MB. Genau daraus muessen
+    aber die Thread-Stacks und ihre Spiegelabbildungen kommen - libnx blendet
+    jeden Stack per svcMapMemory ein zweites Mal ein
+    (`nx/source/kernel/thread.c:132`).
+
+    Bei 2 MB je Stack sind das etwa zehn Threads; die Engine legt Plattform-,
+    UI-, Raster- und IO-Thread an, dazu Dart-Worker und den dart:io-
+    Eventhandler. Es reicht mal und mal nicht - daher
+
+        thread.cc:19: Could not start thread dart:io EventHandler: 12
+        (Not enough space)
+
+    und die sporadischen Abstuerze davor.
+
+    1 MB ist der Kompromiss: doppelt so viele Threads moeglich, und immer noch
+    so viel, wie Dart seinen eigenen Threads gibt (`OSThread::GetMaxStackSize`
+    liefert ebenfalls 1 MB). Tiefer zu gehen waere fuer Skias Rasterisierung
+    riskant.
+    """
+    path = os.path.join(src, "flutter", "fml", "thread.cc")
+    replace_once(
+        path,
+        "size_t Thread::GetDefaultStackSize() {\n"
+        "  return 1024 * 1024 * 2;\n"
+        "}\n",
+        "size_t Thread::GetDefaultStackSize() {\n"
+        "#if defined(FML_OS_HORIZON)\n"
+        "  // Siehe patch-engine-horizon.py, patch_fml_thread_stack: Auf\n"
+        "  // Horizon ist der Speicher ausserhalb des Heaps knapp, und genau\n"
+        "  // daraus entstehen Thread-Stacks samt Spiegelabbildung.\n"
+        "  return 1024 * 1024;\n"
+        "#else\n"
+        "  return 1024 * 1024 * 2;\n"
+        "#endif\n"
+        "}\n",
+        "fml/thread.cc (Stackgroesse)",
+    )
+
+
+def patch_fml_log_sink(src: str) -> None:
+    """FML_LOG auf dieselbe Senke wie Syslog und OS::Print legen.
+
+    fml faellt fuer Horizon in den #else-Zweig und schreibt mit fprintf nach
+    stderr - auf der Konsole ins Leere. Betroffen ist gerade die
+    aufschlussreichste Meldung: FML_LOG(FATAL) ruft anschliessend
+    KillProcess() -> abort(), und genau so sah der Snapshot-Versionskonflikt
+    von aussen wie ein harter Absturz aus.
+
+    Im Gegensatz zu den Marken in dart.cc ist das keine Wegwerf-
+    Instrumentierung: Ohne diesen Weg ist jede Engine-Meldung auf der
+    Zielplattform unsichtbar.
+    """
+    path = os.path.join(src, "flutter", "fml", "logging.cc")
+    replace_once(
+        path,
+        "    // Don't use std::cerr here, because it may not be initialized "
+        "properly yet.\n"
+        "    fprintf(stderr, \"%s\", stream_.str().c_str());\n",
+        "    // Don't use std::cerr here, because it may not be initialized "
+        "properly yet.\n"
+        "#if defined(FML_OS_HORIZON)\n"
+        "    if (flutter_libnx_vm_log != nullptr) {\n"
+        "      flutter_libnx_vm_log(stream_.str().c_str());\n"
+        "    }\n"
+        "#endif\n"
+        "    fprintf(stderr, \"%s\", stream_.str().c_str());\n",
+        "fml/logging.cc (Horizon-Senke)",
+    )
+    replace_once(
+        path,
+        "namespace fml {\n",
+        "#if defined(FML_OS_HORIZON)\n"
+        "// Vom Embedder gestellt; fehlt er, ist der Zeiger null und es bleibt\n"
+        "// beim bisherigen Verhalten.\n"
+        "extern \"C\" __attribute__((weak)) void flutter_libnx_vm_log(\n"
+        "    const char* text);\n"
+        "#endif\n"
+        "\n"
+        "namespace fml {\n",
+        "fml/logging.cc (weak-Deklaration)",
+    )
+
+
+def patch_snapshot_flags_trace(src: str) -> None:
+    """DEBUG-INSTRUMENTIERUNG: InitializeGlobalVMFlagsFromSnapshot zerlegen.
+
+    Der Lauf endet zwischen "SetupFromBuffer fertig" und der Uebernahme der
+    Snapshot-Flags. Dazwischen liegt nur diese eine Funktion, und in ihr drei
+    Schritte: Versionsvergleich, Feature-String lesen, Feature-String parsen.
+
+    Nach der Fehlersuche wieder entfernen.
+    """
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "vm", "app_snapshot.cc")
+    trace_mark(
+        path,
+        "  SnapshotHeaderReader header_reader(snapshot);\n"
+        "\n"
+        "  char* error = header_reader.VerifyVersion();\n"
+        "  if (error != nullptr) {\n"
+        "    return error;\n"
+        "  }\n"
+        "\n"
+        "  const char* features = nullptr;\n"
+        "  intptr_t features_length = 0;\n"
+        "  error = header_reader.ReadFeatures(&features, &features_length);\n"
+        "  if (error != nullptr) {\n"
+        "    return error;\n"
+        "  }\n",
+        "  SnapshotHeaderReader header_reader(snapshot);\n"
+        "\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"SnapshotFlags: erwartete Version '%s'\\n\",\n"
+        "                Version::SnapshotString());\n"
+        "#endif\n"
+        "  char* error = header_reader.VerifyVersion();\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"SnapshotFlags: VerifyVersion durch (%s)\\n\",\n"
+        "                error == nullptr ? \"ok\" : error);\n"
+        "#endif\n"
+        "  if (error != nullptr) {\n"
+        "    return error;\n"
+        "  }\n"
+        "\n"
+        "  const char* features = nullptr;\n"
+        "  intptr_t features_length = 0;\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"SnapshotFlags: vor ReadFeatures\\n\");\n"
+        "#endif\n"
+        "  error = header_reader.ReadFeatures(&features, &features_length);\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"SnapshotFlags: ReadFeatures durch (%s), %\" Pd\n"
+        "                \" Zeichen\\n\",\n"
+        "                error == nullptr ? \"ok\" : error, features_length);\n"
+        "#endif\n"
+        "  if (error != nullptr) {\n"
+        "    return error;\n"
+        "  }\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  Syslog::Print(\"SnapshotFlags: Merkmale = '%.200s'\\n\", features);\n"
+        "#endif\n",
+        "dart vm/app_snapshot.cc (Flags-Instrumentierung)",
+    )
+    # vm/version.h bindet die Datei bereits ein; syslog.h fehlt.
+    trace_mark(
+        path,
+        '#include "vm/version.h"\n',
+        '#include "vm/version.h"\n'
+        '#include "platform/syslog.h"\n',
+        "dart vm/app_snapshot.cc (syslog.h)",
+    )
+
+
+def patch_dart_vm_bootstrap_trace(src: str) -> None:
+    """DEBUG-INSTRUMENTIERUNG: die Flutter-Seite vor Dart_Initialize.
+
+    Zwischen BootstrapDartIo und Dart_Initialize liegen das Zusammenbauen der
+    VM-Flags und Dart_SetVMFlags. Beides ist bisher unbelegt.
+    """
+    path = os.path.join(src, "flutter", "runtime", "dart_vm.cc")
+    trace_mark(
+        path,
+        "    dart::bin::BootstrapDartIo();\n",
+        "    dart::bin::BootstrapDartIo();\n"
+        "#if defined(FML_OS_HORIZON)\n"
+        "    dart::Syslog::Print(\"DartVM: BootstrapDartIo fertig\\n\");\n"
+        "#endif\n",
+        "flutter runtime/dart_vm.cc (BootstrapDartIo)",
+    )
+    trace_mark(
+        path,
+        "  char* flags_error = Dart_SetVMFlags(args.size(), args.data());\n",
+        "#if defined(FML_OS_HORIZON)\n"
+        "  dart::Syslog::Print(\"DartVM: vor Dart_SetVMFlags (%zu Flags)\\n\",\n"
+        "                      args.size());\n"
+        "#endif\n"
+        "  char* flags_error = Dart_SetVMFlags(args.size(), args.data());\n"
+        "#if defined(FML_OS_HORIZON)\n"
+        "  dart::Syslog::Print(\"DartVM: Dart_SetVMFlags fertig\\n\");\n"
+        "#endif\n",
+        "flutter runtime/dart_vm.cc (Dart_SetVMFlags)",
+    )
+    trace_mark(
+        path,
+        "    TRACE_EVENT0(\"flutter\", \"Dart_Initialize\");\n",
+        "#if defined(FML_OS_HORIZON)\n"
+        "    dart::Syslog::Print(\"DartVM: vor Dart_Initialize\\n\");\n"
+        "#endif\n"
+        "    TRACE_EVENT0(\"flutter\", \"Dart_Initialize\");\n",
+        "flutter runtime/dart_vm.cc (Dart_Initialize)",
+    )
+    # Zwischen der Marke oben und dem eigentlichen Aufruf liegt das
+    # Zusammenbauen der Parameter - darunter die Snapshot-Zeiger.
+    trace_mark(
+        path,
+        "    DartVMInitializer::Initialize(&params,\n",
+        "#if defined(FML_OS_HORIZON)\n"
+        "    dart::Syslog::Print(\n"
+        "        \"DartVM: Parameter stehen (snapshot_data=%p instr=%p)\\n\",\n"
+        "        params.vm_snapshot_data, params.vm_snapshot_instructions);\n"
+        "#endif\n"
+        "    DartVMInitializer::Initialize(&params,\n",
+        "flutter runtime/dart_vm.cc (Parameterblock)",
+    )
+    trace_mark(
+        path,
+        '#include "flutter/runtime/dart_vm.h"\n',
+        '#include "flutter/runtime/dart_vm.h"\n'
+        '#include "third_party/dart/runtime/platform/syslog.h"\n',
+        "flutter runtime/dart_vm.cc (syslog.h)",
+    )
 
 
 def patch_dart_bin_guards(src: str) -> None:
@@ -2191,6 +2832,78 @@ def patch_dart_platform_linux_files(src: str) -> None:
             f"dart platform/{name}",
         )
 
+    # Syslog ist auf Horizon ein blinder Kanal - und ausgerechnet der, ueber
+    # den die VM ihre schwersten Fehler meldet: FATAL laeuft ueber
+    # Assert::Fail -> DynamicAssertionHelper::Print -> Syslog::PrintErr
+    # (platform/assert.cc:37), NICHT ueber OS::PrintErr. Die Linux-Fassung
+    # schreibt auf stderr, das die Konsole nirgendwohin ausgibt. Eine
+    # ausbleibende Meldung war deshalb bisher kein Beleg dafuer, dass die VM
+    # nichts zu melden hatte.
+    #
+    # Beide Ausgaben gehen jetzt zusaetzlich durch dieselbe schwach gebundene
+    # Senke wie OS::Print (siehe os_horizon.cc). Fehlt der Embedder, ist der
+    # Zeiger null und es bleibt beim bisherigen Verhalten.
+    replace_once(
+        os.path.join(base, "syslog_linux.cc"),
+        "namespace dart {\n"
+        "\n"
+        "void Syslog::VPrint(const char* format, va_list args) {\n"
+        "  vfprintf(stdout, format, args);\n"
+        "  fflush(stdout);\n"
+        "}\n"
+        "\n"
+        "void Syslog::VPrintErr(const char* format, va_list args) {\n"
+        "  vfprintf(stderr, format, args);\n"
+        "  fflush(stderr);\n"
+        "}\n",
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "extern \"C\" __attribute__((weak)) void flutter_libnx_vm_log(\n"
+        "    const char* text);\n"
+        "\n"
+        "static void HorizonSink(const char* format, va_list args) {\n"
+        "  if (flutter_libnx_vm_log == nullptr) {\n"
+        "    return;\n"
+        "  }\n"
+        "  char buffer[1024];\n"
+        "  va_list copy;\n"
+        "  va_copy(copy, args);\n"
+        "  const int written = vsnprintf(buffer, sizeof(buffer), format, copy);\n"
+        "  va_end(copy);\n"
+        "  if (written > 0) {\n"
+        "    flutter_libnx_vm_log(buffer);\n"
+        "  }\n"
+        "}\n"
+        "#endif  // defined(DART_HOST_OS_HORIZON)\n"
+        "\n"
+        "namespace dart {\n"
+        "\n"
+        "void Syslog::VPrint(const char* format, va_list args) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  HorizonSink(format, args);\n"
+        "#endif\n"
+        "  vfprintf(stdout, format, args);\n"
+        "  fflush(stdout);\n"
+        "}\n"
+        "\n"
+        "void Syslog::VPrintErr(const char* format, va_list args) {\n"
+        "#if defined(DART_HOST_OS_HORIZON)\n"
+        "  HorizonSink(format, args);\n"
+        "#endif\n"
+        "  vfprintf(stderr, format, args);\n"
+        "  fflush(stderr);\n"
+        "}\n",
+        "dart platform/syslog_linux.cc (Horizon-Senke)",
+    )
+
+    # stdarg.h fuer va_copy; stdio.h allein reicht dafuer nicht zuverlaessig.
+    replace_once(
+        os.path.join(base, "syslog_linux.cc"),
+        "#include <stdio.h>  // NOLINT\n",
+        "#include <stdarg.h>  // NOLINT\n"
+        "#include <stdio.h>  // NOLINT\n",
+        "dart platform/syslog_linux.cc (stdarg.h)",
+    )
+
     # utils_linux.cc bindet sys/utsname.h ein - fuer uname, das Horizon nicht
     # hat. Der Rest der Datei sind vsnprintf-Huellen und Zeichenkettenhilfen.
     replace_once(
@@ -2362,10 +3075,12 @@ def patch_skia_config(src: str) -> None:
         "  skia_use_vulkan = false\n"
         "  skia_use_dng_sdk = false\n"
         "\n"
-        "  # Schriften liefert die App mit; fontconfig gibt es nicht.\n"
+        "  # fontconfig gibt es nicht. Die Schriften kommen vom System, aber\n"
+        "  # ueber den pl:u-Dienst statt ueber einen Dateipfad - deshalb der\n"
+        "  # Manager fuer eingebettete Daten und nicht der fuer Verzeichnisse.\n"
         "  skia_enable_fontmgr_custom_empty = true\n"
         "  skia_enable_fontmgr_custom_directory = false\n"
-        "  skia_enable_fontmgr_custom_embedded = false\n"
+        "  skia_enable_fontmgr_custom_embedded = true\n"
         "  skia_enable_fontmgr_fontconfig = false\n"
         "\n"
         "  # Ausdruecklich, wie im Fuchsia-Block darueber: Der Vorgabewert\n"
@@ -2487,6 +3202,30 @@ def main() -> int:
     patch_embedder_static_library(SRC)
     patch_dart_synchronization_posix(SRC)
     patch_dart_platform_linux_files(SRC)
+    # Startmarken der Fehlersuche vom 2026-08-10. Standardmaessig aus: Sie
+    # liegen in dart.cc und app_snapshot.cc, und beide gehen in den
+    # Snapshot-Hash ein (make_version.py) - eingeschaltet erzwingen sie also
+    # einen neuen gen_snapshot UND einen neuen Snapshot.
+    #
+    #   TRACE=1 python3 scripts/patch-engine-horizon.py
+    #
+    # Ausgeschaltet nehmen dieselben Funktionen ihre Einfuegungen wieder
+    # zurueck, damit ein Wechsel in beide Richtungen funktioniert.
+    if TRACE:
+        print("==> Startmarken EIN (TRACE=1)")
+    patch_eventhandler_start_trace(SRC)
+    patch_dart_init_trace(SRC)
+    patch_dart_vm_bootstrap_trace(SRC)
+    patch_snapshot_flags_trace(SRC)
+    patch_dart_thread_diagnostics(SRC)
+    patch_fml_thread_stack(SRC)
+    patch_fml_log_sink(SRC)
+    patch_dart_platform_name(SRC)
+    patch_dart_ffi_abi(SRC)
+    patch_dart_image_snapshot(SRC)
+    patch_txt_platform(SRC, os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    patch_launch_shell_trace(SRC)
 
     print("==> flutter/skia/BUILD.gn")
     patch_skia_config(SRC)
