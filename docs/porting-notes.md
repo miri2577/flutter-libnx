@@ -6,6 +6,35 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-12 – Das Ruckeln war die eigene Notlösung
+
+**Befund:** rezkonv lief spürbar ruckelig; die Konsole kann mehr.
+**Ursache:** Plattform-, UI- und Raster-Runner lagen seit der
+ENOMEM-Fehldiagnose auf EINEM Thread mit 4-ms-Schlaftakt - Widget-Aufbau,
+Software-Rasterung (die teuerste Stufe bei 720p) und Eingabe in einer
+Warteschlange. Die Diagnose, die das Zusammenlegen begründete, ist längst
+widerlegt (Threads kosten praktisch nichts, der echte Absturz war die
+Heap-Erbschaft).
+
+**Reparatur:** Nur noch der Plattform-Runner ist unserer (Kanäle und
+swkbd müssen auf der Hauptschleife ankommen); UI und Raster bekommen von
+der Engine eigene Threads und laufen als Pipeline auf getrennten Kernen.
+`SoftwarePresent` läuft damit auf dem Raster-Thread - der libnx-
+Framebuffer wird nur von dort berührt, das ist in Ordnung.
+
+**Auf Hardware: "läuft flüssiger" (Nutzerurteil).** Zahlen stehen noch
+aus - die Frame-Messung feuert erst nach 600 zusammenhängenden Frames
+(~10 s Dauerzeichnen).
+
+*Lehre, einmal mehr: Eine Notlösung überlebt ihre widerlegte Begründung,
+wenn niemand sie zurückbaut. Beim Schließen einer Fehldiagnose auch die
+darauf gebauten Umbauten prüfen.*
+
+Nebenfund aus dem Log: rezkonv ruft `url_launcher.launch` - der nächste
+Gruppe-B-Kandidat, Weg über das Web-Applet steht in target-apps.md.
+
+---
+
 ## 2026-08-11 (Nacht, VI) – Der fehlende Plugin-Registrant und die Codec-Falle
 
 **Der `LateInitializationError` war nie Secure Storage** – er war

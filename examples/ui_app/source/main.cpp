@@ -591,16 +591,21 @@ int main(int argc, char* argv[]) {
   // bringt hier ohnehin nichts - die NRO wird beendet, nicht neu bespielt.
   project.shutdown_dart_vm_when_done = true;
 
-  // Plattform-, Render- und UI-Aufgaben auf diesen Thread legen.
+  // Nur der Plattform-Thread gehört uns; UI und Raster bekommen von der
+  // Engine eigene Threads.
   //
-  // Das spart drei Threads samt Stack und Spiegelabbildung – der Grund, warum
-  // der dart:io-Eventhandler bisher regelmäßig mit ENOMEM scheiterte – und es
-  // sorgt dafür, dass Rückmeldungen der Engine überhaupt ankommen: Wer den
-  // Plattform-Thread mit einer eigenen Schleife belegt, ohne die Aufgaben der
-  // Engine abzuarbeiten, wartet vergeblich auf jede Antwort.
+  // GESCHICHTE: Bis 2026-08-11 lagen alle drei auf diesem einen Thread -
+  // die Reaktion auf "pthread_create scheitert mit ENOMEM". Diese Diagnose
+  // war falsch (libnx meldet ENOMEM fuer jeden Threadfehler; wirklich war
+  // es die Heap-Erbschaft, siehe porting-notes). Die Folge des Zusammen-
+  // legens: Widget-Aufbau, Software-Rasterung (die teuerste Stufe bei
+  // 720p) und Eingabe standen in EINER Warteschlange mit 4-ms-Schlaftakt -
+  // rezkonv lief spuerbar ruckelig. Mit eigenen Engine-Threads laufen
+  // UI-Aufbau und Rasterung als Pipeline auf getrennten Kernen.
   //
-  // Für einen Software-Renderer ohne GPU-Nebenläufigkeit ist das Zusammenlegen
-  // kein Verlust; die Embedder-API sieht es ausdrücklich vor.
+  // Der Plattform-Runner bleibt unserer: Plattformnachrichten (Kanaele,
+  // swkbd) MUESSEN auf dem Thread der Hauptschleife ankommen, und die
+  // Schleife pumpt sie ueber RunExpiredTasks.
   static flutter_libnx::TaskRunner task_runner;
   task_runner.BindToCurrentThread();
   const FlutterTaskRunnerDescription runner_description =
@@ -609,8 +614,6 @@ int main(int argc, char* argv[]) {
   FlutterCustomTaskRunners custom_runners = {};
   custom_runners.struct_size = sizeof(FlutterCustomTaskRunners);
   custom_runners.platform_task_runner = &runner_description;
-  custom_runners.render_task_runner = &runner_description;
-  custom_runners.ui_task_runner = &runner_description;
   project.custom_task_runners = &custom_runners;
 
   // Batteriedienst für den Platform-Channel-Nachweis. Scheitert das, läuft
