@@ -6,6 +6,30 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-15 – Frame-Baseline: Software-Rendering ist der Deckel
+
+Erste saubere Zahlen (pausenbereinigte Messung, CPU-Boost aktiv,
+Thread-Pipeline): **12-15 Bilder/s im Zeichnen** beim Scrollen durch
+rezkonv. Die "schlechtesten Abstände" um 450-490 ms liegen knapp unter
+der 500-ms-Pausenschwelle - mutmaßlich Wischpausen, keine Hänger.
+
+Einordnung: Eingabe und UI-Logik blockieren nicht mehr (daher das
+Nutzerurteil "läuft gut"), aber die Software-Rasterung eines vollen
+Material-Screens bei 720p schafft auf einem Cortex-A57 strukturell
+keine 60 fps - auch nicht mit 1785 MHz. Thread-Entflechtung und Boost
+haben geliefert, was der Software-Weg hergibt.
+
+**Der nächste Sprung heißt GPU-Rendering** (eigener Meilenstein):
+switch-mesa/nouveau liefert Homebrew vollwertiges OpenGL, die Engine
+kennt den GL-Embedder (FlutterOpenGLRendererConfig), Skia müsste mit
+GL-Backend neu konfiguriert werden. Realistische Aussicht auf 60 fps.
+
+Messwerkzeug-Notiz: Pausenschwelle 500 ms ist grosszuegig; wer feiner
+messen will, senkt sie auf ~200 ms, um Wischpausen zwischen einzelnen
+Scroll-Gesten auszuschliessen.
+
+---
+
 ## 2026-08-12 – Das Ruckeln war die eigene Notlösung
 
 **Befund:** rezkonv lief spürbar ruckelig; die Konsole kann mehr.
