@@ -21,6 +21,8 @@
 // Alle Handler laufen auf dem Plattform-Thread (der Hauptschleife) - keine
 // Nebenläufigkeit, keine Sperren.
 
+#include <switch.h>
+
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
@@ -272,6 +274,66 @@ bool HandleSharedPreferences(FLUTTER_API_SYMBOL(FlutterEngine) engine,
   }
 
   LOG_WARN("shared_preferences: unbekannte Methode '%s'", method.c_str());
+  return false;
+}
+
+// --- url_launcher -----------------------------------------------------------
+//
+// Der Systembrowser der Konsole (NetFront, WebKit-basiert) laeuft als
+// Vollbild-Applet: webPageCreate + webConfigShow, die Domain der URL wird
+// automatisch freigeschaltet (libnx web.h:315). Wie beim swkbd blockiert
+// die Anzeige die Hauptschleife - das Applet uebernimmt den Bildschirm
+// ohnehin. Die Antwort geht deshalb VOR dem Oeffnen raus.
+//
+// Nur http/https: Andere Schemata (mailto, tel, ...) kann die Konsole
+// nicht darstellen; canLaunch sagt das ehrlich.
+
+bool IsWebUrl(const std::string& url) {
+  return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0;
+}
+
+bool HandleUrlLauncher(FLUTTER_API_SYMBOL(FlutterEngine) engine,
+                       const FlutterPlatformMessage* message,
+                       const std::string& method,
+                       const StdValue& args) {
+  const StdValue* url = MapGet(args, "url");
+  const bool has_url =
+      url != nullptr && url->type == StdValue::Type::kString;
+
+  if (method == "canLaunch") {
+    Respond(engine, message,
+            EncodeStdSuccess(
+                StdValue::Bool(has_url && IsWebUrl(url->as_string))));
+    return true;
+  }
+  if (method == "launch") {
+    if (!has_url || !IsWebUrl(url->as_string)) {
+      Respond(engine, message,
+              EncodeStdError("argument",
+                             "Nur http/https lassen sich auf der Konsole "
+                             "oeffnen"));
+      return true;
+    }
+    // Erst antworten, dann blockieren (Applet uebernimmt den Bildschirm).
+    Respond(engine, message, EncodeStdSuccess(StdValue::Bool(true)));
+
+    WebCommonConfig config;
+    const Result rc = webPageCreate(&config, url->as_string.c_str());
+    if (R_SUCCEEDED(rc)) {
+      LOG_INFO("url_launcher: oeffne %s im Systembrowser",
+               url->as_string.c_str());
+      webConfigShow(&config, nullptr);
+    } else {
+      LOG_ERROR("url_launcher: webPageCreate = 0x%08x", rc);
+    }
+    return true;
+  }
+  if (method == "closeWebView") {
+    Respond(engine, message, EncodeStdSuccess(StdValue::Bool(true)));
+    return true;
+  }
+
+  LOG_WARN("url_launcher: unbekannte Methode '%s'", method.c_str());
   return false;
 }
 
@@ -603,7 +665,10 @@ extern "C" bool flutter_libnx_handle_plugin_message(
   const bool is_secure_storage =
       strcmp(message->channel,
              "plugins.it_nomads.com/flutter_secure_storage") == 0;
-  if (!is_path_provider && !is_shared_preferences && !is_secure_storage) {
+  const bool is_url_launcher =
+      strcmp(message->channel, "plugins.flutter.io/url_launcher") == 0;
+  if (!is_path_provider && !is_shared_preferences && !is_secure_storage &&
+      !is_url_launcher) {
     return false;
   }
 
@@ -621,6 +686,9 @@ extern "C" bool flutter_libnx_handle_plugin_message(
   }
   if (is_secure_storage) {
     return HandleSecureStorage(engine, message, method, args);
+  }
+  if (is_url_launcher) {
+    return HandleUrlLauncher(engine, message, method, args);
   }
   return HandleSharedPreferences(engine, message, method, args);
 }

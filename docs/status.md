@@ -308,7 +308,12 @@ Logzeile auf der SD-Karte.
       wählen" liefert den Inhalt von
       `/switch/flutter_apps/<app-id>/import/` (Einzelauswahl: neueste
       Datei; Mehrfach: alle passenden; leer: null = abgebrochen).
-      Noch nicht auf Hardware geprüft (braucht eine Importdatei auf SD).
+      Kanal auf Hardware bestätigt; Volltest braucht eine Importdatei.
+- [x] **`url_launcher` – auf Hardware bestätigt** (2026-08-15): öffnet
+      http/https im Systembrowser der Konsole (NetFront-Web-Applet,
+      `webPageCreate` + `webConfigShow`; Domain wird automatisch
+      freigeschaltet). Antwort geht vor dem blockierenden Applet raus,
+      wie beim swkbd. Nur-http/https ehrlich über `canLaunch`.
 - [ ] Frame-Messung eingebaut (600-Frame-Fenster in `SoftwarePresent`),
       liefert aber erst bei anhaltendem Zeichnen (Scrollen/Animation)
       eine Zeile – Zahlen stehen noch aus.
