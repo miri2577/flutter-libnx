@@ -98,8 +98,11 @@ bool SoftwarePresent(void* user_data,
   g_platform->EndFrame();
   g_first_frame_presented = true;
 
-  // MESSUNG (Ruckeln): Frame-Abstaende, alle 600 Frames eine Zeile.
-  // Nutzerurteil war "etwas ruckelig" - erst beziffern, dann optimieren.
+  // MESSUNG (Ruckeln): Frame-Abstaende waehrend zusammenhaengenden
+  // Zeichnens, alle 120 gezaehlten Frames eine Zeile. Abstaende ueber
+  // 500 ms sind Leerlauf (Flutter zeichnet nur bei Bedarf) und fallen
+  // aus der Wertung - die erste Fassung zaehlte sie mit und meldete
+  // 7 fps "im Mittel" fuer eine ruhig daliegende App.
   {
     static uint64_t last_ns = 0;
     static uint64_t sum_ns = 0;
@@ -108,17 +111,21 @@ bool SoftwarePresent(void* user_data,
     const uint64_t now_ns = FlutterEngineGetCurrentTime();
     if (last_ns != 0) {
       const uint64_t delta = now_ns - last_ns;
-      sum_ns += delta;
-      if (delta > worst_ns) {
-        worst_ns = delta;
-      }
-      if (++count == 600) {
-        LOG_INFO("Frames: %.1f/s im Mittel, schlechtester Abstand %.0f ms",
-                 600.0 * 1e9 / static_cast<double>(sum_ns),
-                 static_cast<double>(worst_ns) / 1e6);
-        sum_ns = 0;
-        worst_ns = 0;
-        count = 0;
+      if (delta > 500'000'000ULL) {
+        // Pause: Fenster weiterlaufen lassen, aber den Abstand nicht werten.
+      } else {
+        sum_ns += delta;
+        if (delta > worst_ns) {
+          worst_ns = delta;
+        }
+        if (++count == 120) {
+          LOG_INFO("Frames: %.1f/s im Zeichnen, schlechtester Abstand %.0f ms",
+                   120.0 * 1e9 / static_cast<double>(sum_ns),
+                   static_cast<double>(worst_ns) / 1e6);
+          sum_ns = 0;
+          worst_ns = 0;
+          count = 0;
+        }
       }
     }
     last_ns = now_ns;
@@ -616,6 +623,18 @@ int main(int argc, char* argv[]) {
   custom_runners.platform_task_runner = &runner_description;
   project.custom_task_runners = &custom_runners;
 
+  // CPU-Boost: Anwendungen laufen standardmäßig mit 1020 MHz; der
+  // offizielle Boost-Modus hebt die CPU auf 1785 MHz und senkt dafür den
+  // GPU-Takt - für reines Software-Rendering der ideale Tausch (+75 %
+  // Rasterleistung, die GPU liegt ohnehin brach). Spiele halten den Modus
+  // während Ladebildschirmen minutenlang; wir halten ihn für die Laufzeit
+  // und geben ihn beim Abgang zurück (der Wirtsprozess vergisst nichts).
+  {
+    const Result boost = appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
+    LOG_INFO("CPU-Boost (1785 MHz): %s",
+             R_SUCCEEDED(boost) ? "aktiv" : "nicht verfuegbar");
+  }
+
   // Batteriedienst für den Platform-Channel-Nachweis. Scheitert das, läuft
   // alles Übrige weiter - der Kanal antwortet dann mit einem Fehler.
   g_psm_ready = R_SUCCEEDED(psmInitialize());
@@ -745,6 +764,7 @@ int main(int argc, char* argv[]) {
   // Dienstes erschoepft, und der naechste Verbindungsaufbau im Prozess
   // (hbmenu-Reload) starb mit 2011-0102 (HIPC, "out of sessions").
   // romfs haengt an einem Storage-Handle mit derselben Lebensdauer.
+  appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
   flutter_libnx_fonts_cleanup();
   flutter_libnx_random_cleanup();
   if (g_psm_ready) {
