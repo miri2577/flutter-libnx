@@ -369,9 +369,20 @@ Logzeile auf der SD-Karte.
       (lokaler TLS-Proxy + HLS-Umschreibung, Resolver-DoH,
       Relay-Route) – FFmpeg des Portlibs hat kein TLS,
       Horizon keine Kindprozesse (kein curl-Fallback).
-- [ ] Relay: nginx-Location auf dem Coolify-Host steht noch
-      aus (Snippet dokumentiert); Hoster-Resolver auf Hardware
-      gegentesten.
+- [x] **Echte App Ende-zu-Ende auf Hardware (2026-08-16):** Referenz-App spielt
+      einen HLS-Stream komplett — Liste → Detail →
+      Hoster-Resolver → HLS → Player mit Bild und Ton, **ohne Server**.
+      Cover werden angezeigt. Kein Relay/curl/WebView nötig: Darts TLS wird
+      direkt akzeptiert, eigener GET über DoH-IP + SNI. App-seitiger
+      Integrationsweg in `docs/flutter-app-integration.md` +
+      Kopiervorlagen `dart_helpers/` (für JEDE Flutter-App).
+- [x] **Player-Teardown-Absturz behoben:** `player.dispose()` →
+      `mpv_terminate_destroy` korrumpiert beim Thread-Abbau den Heap
+      (Horizon-Stack-Erbschaft, intra-session). Fix: persistente
+      Player-Instanz, beim Verlassen nur `stop()`. Details in
+      porting-notes (IV).
+- [ ] WebView-abhängige Hoster (WebView-abhaengige) — regex/JS
+      ohne WebView nachbauen, falls gewünscht (Regex-Resolver laufen bereits).
 - [ ] Ein harter Konsolen-Absturz beim Video-Start (vor der
       Ein-Kontext-Architektur) blieb unerklaert – Log brach in
       Binaermuell ab, kein Handler lief. Beobachten.

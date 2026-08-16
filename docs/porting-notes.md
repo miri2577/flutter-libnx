@@ -6,6 +6,65 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-16 (IV) – Echte App auf der Switch: Video-Seite Ende-zu-Ende, und der Player-Teardown-Absturz
+
+**Auf Hardware bestaetigt:** Referenz-App spielt einen HLS-Stream
+komplett — Liste → Detail → Hoster-Resolver → HLS → Player mit Bild und
+Ton, **ohne jeden Server**. Cover werden angezeigt. Der app-seitige
+Integrationsweg ist in `docs/flutter-app-integration.md` gesammelt (mit
+Kopiervorlagen in `dart_helpers/`), weil er fuer jede Flutter-App gilt,
+nicht nur fuer Referenz-App. Das Wichtigste hier:
+
+### Netzwerk ohne Relay/curl/WebView
+
+Darts BoringSSL-TLS wird von Cloudflare-geschuetzten Seiten und allen getesteten
+Hostern AKZEPTIERT (HTTP 200, keine Challenge) — der lange verfolgte
+Relay-/Coolify-Weg war unnoetig. Es fehlte nur der Verbindungsweg:
+`HttpClient.connectionFactory` gibt fuer https einen ungesicherten Socket
+weiter (→ „400 plain HTTP to HTTPS port"), und `ConnectionTask` ist
+`final` (kein eigener SecureSocket-Wrapper). Loesung: eigener Roh-GET,
+`Socket.connect(DoH-IP)` + `SecureSocket.secure(host: hostname)` (SNI!),
+Redurects/gzip/chunked selbst. Lesen an der chunked-Endmarke beenden —
+Cloudflare sendet trotz `Connection: close` kein FIN, sonst 20–25 s
+Timeout pro Anfrage bei vollstaendigen Daten.
+
+### Der harte Absturz beim Player-Schliessen (Kernbefund)
+
+Zwei SD-Absturzlogs (per ftpd geholt, weil die TCP-Logsenke beim harten
+Crash nichts mehr ausliefert) enden BEIDE im **Player-Teardown**:
+`media_kit_video: Textur N abgebaut` → dann Absturz, eines mit
+Binaermuell im Log = Speicherkorruption. Unser Embedder-Dispose ist
+sauber; der Crash liegt DANACH in Darts `NativePlayer.dispose` →
+`mpv_terminate_destroy`. Dessen Thread-Abbau hinterlaesst auf Horizon
+geliehene Stacks (dieselbe `svcMapMemory`-Erbschaft wie beim alten
+`_malloc_r`-Absturz, siehe Meilenstein 3) und korrumpiert den Heap
+INTRA-Session; die laufende Anzeige (Cover/Scan) laeuft bei der naechsten
+Allokation hinein. Der leichte Intro-Player uebersteht seinen einen
+Abbau, der schwere Video-Player (150-MiB-Puffer, `hwdec=auto`, mehr
+Threads) nicht.
+
+**Loesung app-seitig:** EINE persistente `Player`-Instanz fuer die
+App-Laufzeit, beim Verlassen nur `stop()`, nie `dispose()` —
+`mpv_terminate_destroy` laeuft damit gar nicht erst. Auf Hardware
+bestaetigt: Wiedergabe → zurueck → Startseite mehrfach ohne Absturz.
+Lehre fuer den Embedder: **Thread-Abbau von Portlibs mitten in der
+Sitzung ist auf Horizon gefaehrlich** — die Heap-Erbschaft ist nicht auf
+den Start beschraenkt.
+
+### Weitere App-Fallen (Details im Integrationsleitfaden)
+
+* Flutters `CachedNetworkImage`/`Image.network` nutzt einen eigenen
+  HttpClient (System-DNS) — Cover brauchen ein eigenes Widget ueber den
+  DoH-GET; `cacheWidth` zwingend, sonst erschoepfen ~120 volle
+  Poster-Texturen den Tegra ueber nouveau (harter Fault ohne Handler).
+* Max. ~4 gleichzeitige Sockets (16 BSD-Sessions) — Semaphore im
+  HTTP-Helfer; Dutzende parallele Cover sprengten sonst den Pool.
+* curl-Fallbacks komplett aus (keine Kindprozesse); WebView-Resolver
+  scheitern (kein InAppWebView) — reine Regex/JS-Resolver (reine Regex-Resolver)
+  laufen, WebView-abhaengige (WebView-abhaengige) nicht.
+
+---
+
 ## 2026-08-16 (III) – Die Video-Bruecke: media_kit liefert Bild und Ton
 
 **Auf Hardware bestaetigt: Das Referenz-App-Intro laeuft mit Bild (richtige
