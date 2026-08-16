@@ -2926,6 +2926,132 @@ def patch_embedder_gl_defines(src: str) -> None:
     )
 
 
+def patch_dart_ffi_callback_metadata(src: str) -> None:
+    # Fund vom 2026-08-16 (media_kit/libmpv): Dart legt FFI-Callback-
+    # Trampoline zur Laufzeit in AUSFUEHRBAREM Speicher an - den es auf
+    # Horizon nicht gibt. mpv sprang den Heap-Zeiger an: Instruction Abort
+    # in mpv_set_wakeup_callback. Fuchsia hat dieselbe Einschraenkung und
+    # nutzt die Stub-Seite direkt aus dem Snapshot (ausfuehrbar in der
+    # .text der NRO) plus eine gewoehnliche RW-Metadatenseite - dieser
+    # Zweig wird fuer Horizon mit aktiviert. Preis: Callback-Anzahl ist
+    # auf eine Seite begrenzt; media_kit braucht eine Handvoll.
+    hdr = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                       "vm", "ffi_callback_metadata.h")
+    cc = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                      "vm", "ffi_callback_metadata.cc")
+    # Die Fortsetzungszeilen (#if ... || <Spalten-Padding> \) werden per
+    # Regex ersetzt - exakte Leerzeichenzahl waere ein fragiler Anker.
+    import re as _re
+
+    def _extend_continuation_guard(path: str, label: str) -> None:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        if "DART_HOST_OS_HORIZON) ||" in text:
+            print(f"    schon gepatcht: {label}")
+            return
+        new_text, count = _re.subn(
+            r"#if defined\(DART_TARGET_OS_FUCHSIA\) \|\|\s*\\\n",
+            "#if defined(DART_TARGET_OS_FUCHSIA) ||"
+            " defined(DART_HOST_OS_HORIZON) ||       \\\n",
+            text,
+        )
+        if count == 0:
+            print(f"    ANKER NICHT GEFUNDEN in {label}")
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        print(f"    gepatcht: {label}")
+
+    _extend_continuation_guard(hdr, "ffi_callback_metadata.h (Horizon wie Fuchsia)")
+    _extend_continuation_guard(cc, "ffi_callback_metadata.cc (Destruktor-Zweig)")
+
+    # Vereinheitlichung: DART_TARGET_OS_HORIZON statt DART_HOST_OS_HORIZON.
+    # Das TARGET-Makro ist in BEIDEN Toolchains definiert (gen_snapshot
+    # zielt auf horizon, dart_os_config setzt es) - nur so rechnen
+    # Stub-Erzeugung (Host) und Laufzeit (Ziel) mit derselben Geometrie.
+    def _host_to_target(path: str, label: str) -> None:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        if "DART_HOST_OS_HORIZON" not in text:
+            print(f"    schon gepatcht: {label}")
+            return
+        text = text.replace("defined(DART_HOST_OS_HORIZON)",
+                            "defined(DART_TARGET_OS_HORIZON)")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"    gepatcht: {label}")
+
+    _host_to_target(hdr, "ffi_callback_metadata.h (TARGET-Makro)")
+    _host_to_target(cc, "ffi_callback_metadata.cc (TARGET-Makro)")
+
+    # Die Adress-Zuordnung Trampolin<->Metadaten hat eigene Fuchsia-Zweige
+    # (TrampolineOfMetadataEntry, MetadataEntryOfTrampoline) - OHNE sie
+    # zeigt das "Trampolin" in die Heap-Metadatenseite: exakt der
+    # Instruction Abort, den mpv_set_wakeup_callback ausgeloest hat.
+    replace_once(
+        cc,
+        "#elif defined(DART_TARGET_OS_FUCHSIA)\n"
+        "  return StubCode::FfiCallbackTrampoline().EntryPoint() +\n",
+        "#elif defined(DART_TARGET_OS_FUCHSIA) ||"
+        " defined(DART_TARGET_OS_HORIZON)\n"
+        "  return StubCode::FfiCallbackTrampoline().EntryPoint() +\n",
+        "ffi_callback_metadata.cc (TrampolineOfMetadataEntry)",
+    )
+    replace_once(
+        cc,
+        "#if defined(DART_TARGET_OS_FUCHSIA)\n"
+        "  // On Fuchsia the metadata page is separate to the trampoline"
+        " page.\n",
+        "#if defined(DART_TARGET_OS_FUCHSIA) ||"
+        " defined(DART_TARGET_OS_HORIZON)\n"
+        "  // On Fuchsia the metadata page is separate to the trampoline"
+        " page.\n",
+        "ffi_callback_metadata.cc (MetadataEntryOfTrampoline)",
+    )
+
+    # Und der Stub-Compiler: Der Fuchsia-Stub laedt die Runtime-Funktionen
+    # ueber BSS-Relokationen statt ueber PC-relative Slots hinter der
+    # Trampolin-Seite - genau richtig, wenn die Trampoline im Snapshot
+    # liegen. Fuenf gleichfoermige Stellen, per Regex alle auf einmal.
+    stub = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "vm", "compiler", "stub_code_compiler_arm64.cc")
+    with open(stub, "r", encoding="utf-8") as f:
+        stub_text = f.read()
+    if "DART_TARGET_OS_HORIZON" in stub_text:
+        print("    schon gepatcht: stub_code_compiler_arm64.cc (BSS-Zweige)")
+    else:
+        stub_new, stub_count = _re.subn(
+            r"#if defined\(DART_TARGET_OS_FUCHSIA\)\n"
+            r"(    // TODO\(https://dartbug\.com/52579\): Remove\.\n"
+            r"    if \(FLAG_precompiled_mode\))",
+            "#if defined(DART_TARGET_OS_FUCHSIA) ||"
+            " defined(DART_TARGET_OS_HORIZON)\n\\1",
+            stub_text,
+        )
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(stub_new)
+        print(f"    gepatcht: stub_code_compiler_arm64.cc"
+              f" ({stub_count} BSS-Zweige)")
+    replace_once(
+        cc,
+        "#if defined(DART_TARGET_OS_FUCHSIA)\n"
+        "  // On Fuchsia we can't currently duplicate pages, so use the"
+        " first page of\n",
+        "#if defined(DART_TARGET_OS_FUCHSIA) || defined(DART_HOST_OS_HORIZON)\n"
+        "  // On Fuchsia we can't currently duplicate pages, so use the"
+        " first page of\n",
+        "ffi_callback_metadata.cc (Konstruktor-Zweig)",
+    )
+    replace_once(
+        cc,
+        "VirtualMemory* FfiCallbackMetadata::AllocateTrampolinePage() {\n"
+        "#if defined(DART_TARGET_OS_FUCHSIA)\n",
+        "VirtualMemory* FfiCallbackMetadata::AllocateTrampolinePage() {\n"
+        "#if defined(DART_TARGET_OS_FUCHSIA) || defined(DART_HOST_OS_HORIZON)\n",
+        "ffi_callback_metadata.cc (AllocateTrampolinePage)",
+    )
+
+
 def patch_dart_security_context(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
                         "bin", "security_context_linux.cc")
@@ -3572,6 +3698,7 @@ def main() -> int:
     patch_dart_ffi_dynamic_library_hooks(SRC)
     patch_embedder_gl_defines(SRC)
     patch_dart_security_context(SRC)
+    patch_dart_ffi_callback_metadata(SRC)
     patch_embedder_external_texture_gl(SRC)
     patch_tonic_build_config(SRC)
     patch_absl_cctz(SRC)

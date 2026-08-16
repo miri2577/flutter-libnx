@@ -12,6 +12,9 @@
 
 #include <switch.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -520,6 +523,28 @@ int main(int argc, char* argv[]) {
   // Baseline: Auffaelligkeiten hier stammen von statischen Konstruktoren
   // oder dem Loader - beides laeuft vor main().
   flutter_libnx_scan_heap("Start");
+
+  // media_kit legt eine Querverweis-Datei unter /tmp ab
+  // (NativeReferenceHolder); ohne das Verzeichnis scheitert deren flush
+  // mit EBADF-Rauschen im Log. Auf sdmc ist /tmp einfach ein Ordner.
+  mkdir("/tmp", 0755);
+  // Altlasten zwingend wegraeumen: media_kit PARST diese Dateien als
+  // Zeiger. Eine leere/verwaiste Datei aus einem frueheren Lauf liefert
+  // Muellzeiger (FormatException, dann Instruction Abort) - und anders
+  // als auf Linux ueberlebt /tmp auf der SD-Karte jeden Neustart.
+  {
+    DIR* tmp_dir = opendir("/tmp");
+    if (tmp_dir != nullptr) {
+      while (dirent* entry = readdir(tmp_dir)) {
+        if (strncmp(entry->d_name, ".com.alexmercerind.media_kit", 28) == 0) {
+          const std::string stale = std::string("/tmp/") + entry->d_name;
+          remove(stale.c_str());
+          LOG_INFO("Altlast entfernt: %s", stale.c_str());
+        }
+      }
+      closedir(tmp_dir);
+    }
+  }
 
   // Bei Bedarf wieder einschalten (sqlite3-Rauchprobe, siehe oben):
   // flutter_libnx_sqlite3_probe();

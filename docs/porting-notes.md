@@ -6,6 +6,68 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-16 (II) – libmpv in der NRO und der Fall der letzten Mauer: FFI-Callbacks
+
+**Auf Hardware bestätigt: Dart-FFI-Callbacks funktionieren** - der von
+Dart erzeugte Callback-Zeiger liegt in der ausführbaren .text des
+Snapshots, mpv ruft ihn ohne Absturz. Damit können Dart und native
+Bibliotheken sich erstmals GEGENSEITIG aufrufen.
+
+### libmpv statisch (Etappe 1 der Videowiedergabe)
+
+devkitPro führt `switch-libmpv` 0.39 als Portlib (samt FFmpeg 7.1,
+libass, libplacebo) - kein Eigenbau nötig. Einbindung wie sqlite3:
+Symboltabelle (`build-mpv-symbols.sh`, 59 Symbole), dl_open-Namen,
+Makefile. Drei Link-Lektionen:
+
+* dav1d/zstd/postproc fehlten (FFmpeg-Deps), Reihenfolge zaehlt
+  (-larchive vor -lzstd).
+* zlib/libjpeg stecken TEILWEISE in der Engine (Chromium-Kopien):
+  Portlib-jpeg ganz raus, Portlib-z rein, `--allow-multiple-definition`
+  laesst die erste Definition gewinnen; `--start-group` um Engine+mpv,
+  weil FFmpeg Engine-zlib rueckwaerts referenziert.
+* media_kit braucht /tmp (NativeReferenceHolder-Datei). ACHTUNG: Es
+  PARST diese Datei als Zeiger, und /tmp auf der SD ueberlebt Neustarts -
+  Altlasten beim Start loeschen, sonst Muellzeiger.
+
+### FFI-Callbacks: das Fuchsia-Modell fuer Horizon
+
+Dart legt Callback-Trampoline normal zur Laufzeit in ausfuehrbarem
+Speicher an - den es auf Horizon nicht gibt (unser Protect() ist ein
+No-Op; die Trampolin-Seite blieb Heap-RW -> Instruction Abort, per
+Shim-Diagnose auf den Dart-Zeiger in mpv_set_wakeup_callback
+festgenagelt). Fuchsia hat dieselbe Grenze; sein Modell: Trampoline
+DIREKT aus der Stub-Seite des Snapshots, Metadaten in separater
+RW-Seite, Runtime-Funktionen ueber BSS-Relokationen statt PC-relativer
+Slots. Fuer Horizon aktiviert heisst das SIEBEN Weichen in DREI
+Schichten - alle muessen zusammenpassen:
+
+1. Konstruktor/Destruktor/AllocateTrampolinePage (Metadatenseite statt
+   Trampolin-Allokation)
+2. Die Adress-Zuordnung TrampolineOfMetadataEntry /
+   MetadataEntryOfTrampoline (ohne sie zeigte das "Trampolin" in die
+   Heap-Metadatenseite - exakt der beobachtete Absturz)
+3. Der STUB-COMPILER (drei BSS-Zweige in
+   stub_code_compiler_arm64.cc) - gen_snapshot erzeugt den Stub, also
+   muss die Weiche dort mit demselben Makro schalten
+
+Deshalb durchgaengig `DART_TARGET_OS_HORIZON` (in beiden Toolchains
+definiert, dart_os_config seit Meilenstein 2) statt des HOST-Makros -
+nur so rechnen Stub-Erzeugung (Host) und Laufzeit (Ziel) mit derselben
+Seiten-Geometrie (kPageSize 4 KB beidseitig). Preis des Modells:
+Callback-Anzahl auf eine Stub-Seite begrenzt; media_kit braucht eine
+Handvoll.
+
+**Stand Referenz-App:** App voll lauffaehig, WebDAV-Cloud-Sync 6 Profile; Intro
+bleibt schwarz-stumm (Player entsteht jetzt echt, aber ohne
+Render-Ziel/Audio-Pfad kein completed-Ereignis) - Tippen ueberspringt.
+**Naechste Etappe: die Video-Bruecke** - mpv_render_gl in GL-Texturen,
+als externe Flutter-Texturen registriert (EmbedderExternalTextureGL ist
+seit dem GL-Meilenstein einkompiliert), plus Audio-Verifikation (mpvs
+SDL-Ausgabe).
+
+---
+
 ## 2026-08-16 – GPU-Meilenstein und der Referenz-App-Feldtest
 
 **Skia rendert über OpenGL auf der GPU: 31-37 fps statt 12-15.** Und der

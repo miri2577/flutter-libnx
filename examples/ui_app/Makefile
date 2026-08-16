@@ -100,7 +100,7 @@ WRAPS	+=	-Wl,--wrap=ftruncate -Wl,--wrap=fcntl
 # libnx' Assembler-Zweig, im Programm referenziert ihn niemand - ohne das darf
 # der Linker ihn wegwerfen, und dann fehlt er genau dann, wenn er gebraucht
 # wird.
-LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(WRAPS) -Wl,-u,__libnx_exception_handler -Wl,-Map,$(notdir $*.map)
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(WRAPS) -Wl,-u,__libnx_exception_handler -Wl,--allow-multiple-definition -Wl,-Map,$(notdir $*.map)
 
 # Statisch gelinktes sqlite3 (third_party/sqlite3, scripts/build-sqlite3.sh).
 # Ueber MAKEFILE_LIST statt CURDIR, weil das Template sich selbst mit
@@ -110,7 +110,25 @@ SQLITE_LIB	:= $(dir $(abspath $(firstword $(MAKEFILE_LIST))))../../third_party/s
 # GPU-Rendering: Mesa (EGL + Desktop-GL ueber nouveau) aus den Portlibs.
 # Reihenfolge zaehlt: EGL braucht glapi, glapi braucht drm_nouveau, alles
 # braucht nx.
-LIBS	:= $(ENGINE_LIB) $(SQLITE_LIB) -lEGL -lglapi -ldrm_nouveau -lnx
+#
+# libmpv (Portlib switch-libmpv) samt Gefolge fuer media_kit: FFmpeg,
+# libass, libplacebo, libarchive, SDL2 (Audioausgabe). Die ENGINE_LIB
+# steht bewusst VORN - ihr eingebautes Freetype/Harfbuzz bedient auch
+# libass; die Portlib-Varianten bleiben draussen (zwei Freetypes in
+# einer NRO waeren ein Duplikatrisiko).
+MPV_LIBS	:= -lmpv -lass -lfribidi -lplacebo \
+	-lavfilter -lavformat -lavcodec -lpostproc -lswscale -lswresample \
+	-lavutil -ldav1d -larchive -lzstd -lSDL2 -lbz2 -llzma -lz
+# Kein -ljpeg: libjpeg-turbo steckt in der Engine und bedient FFmpeg mit.
+# zlib ist doppelt vorhanden (Engine-Teilkopie + Portlib) - beide sind
+# Standard-zlib, --allow-multiple-definition laesst die erste Definition
+# gewinnen. Ohne Portlib-z fehlen inflate/crc32 (Engine-Kopie ist
+# unvollstaendig), ohne den Schalter kollidieren 59 Symbole.
+
+# start/end-group: FFmpeg braucht zlib/jpeg AUS der Engine-Bibliothek, die
+# im Einweg-Durchlauf schon abgehandelt waere - die Gruppe laesst den
+# Linker iterieren, bis sich nichts mehr aufloest.
+LIBS	:= -Wl,--start-group $(ENGINE_LIB) $(SQLITE_LIB) $(MPV_LIBS) -Wl,--end-group -lEGL -lglapi -ldrm_nouveau -lnx
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
