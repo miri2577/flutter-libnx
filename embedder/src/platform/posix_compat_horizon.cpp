@@ -524,6 +524,7 @@ extern "C" ssize_t __real_write(int fd, const void* buf, size_t count);
 extern "C" off_t __real_lseek(int fd, off_t offset, int whence);
 extern "C" int __real_ftruncate(int fd, off_t length);
 extern "C" int __real_fcntl(int fd, int cmd, ...);
+extern "C" int __real_fsync(int fd);
 
 extern "C" int __wrap_open(const char* path, int flags, ...) {
   mode_t mode = 0;
@@ -672,6 +673,30 @@ extern "C" int __wrap_ftruncate(int fd, off_t length) {
     }
   }
   return __real_ftruncate(fd, length);
+}
+
+// fsync auf einem virtuellen Handle: newlib kennt die Nummer nicht -> EBADF.
+// Genau daran scheiterte RandomAccessFile.flush (Dart), das media_kit beim
+// player.open ueber safe_local_storage aufruft; die Exception brach das
+// Intro ab, bevor ueberhaupt Video lief. Uebersetzt auf den echten
+// Deskriptor - und toleriert, dass devoptab/FAT kein fsync kann (EBADF/
+// ENOSYS/EINVAL): Die Daten liegen nach write() beim Dateidienst,
+// Haltbarkeit im Linux-Sinn gibt es auf der SD-Karte ohnehin nicht.
+extern "C" int __wrap_fsync(int fd) {
+  FileState& state = GetFileState();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      const int rc = __real_fsync(state.bases[file->base].real_fd);
+      if (rc != 0 &&
+          (errno == EBADF || errno == ENOSYS || errno == EINVAL)) {
+        return 0;
+      }
+      return rc;
+    }
+  }
+  return __real_fsync(fd);
 }
 
 // Dateisperren: Es gibt genau einen Prozess auf der Konsole - jede Sperre

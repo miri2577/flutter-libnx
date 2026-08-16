@@ -1,6 +1,6 @@
 # Status
 
-Stand: 2026-08-09
+Stand: 2026-08-16
 
 Nur abgehakt, was tatsächlich ausgeführt und überprüft wurde.
 
@@ -348,10 +348,40 @@ Logzeile auf der SD-Karte.
       Login, **WebDAV-Cloud-Anmeldung erfolgreich und funktional**. Drei
       dokumentierte App-Guards (MediaKit/windowManager/IntroPage) im
       Referenz-App-Repo. Video bleibt Forschungsprojekt.
+- [x] **Die Video-Brücke: media_kit liefert Bild und Ton** (2026-08-16,
+      auf Hardware über viele Zyklen bestätigt): Kanal
+      `com.alexmercerind/media_kit_video` im Embedder
+      (`media_kit_video_horizon.cpp`), mpv rendert **direkt in Skias
+      Fensterkontext** im Textur-Frame-Callback auf dem Raster-Thread
+      (nouveau vertraegt weder nebenlaeufige Submission noch
+      Textur-Sharing zwischen Kontexten), Render-Kontext eager per
+      `FlutterEnginePostRenderThreadTask` (ohne ihn waehlt mpv keine
+      Videospur), `flip_y=0` empirisch, Audio ueber mpvs SDL-Ausgabe.
+      Sechs Befunde in `docs/porting-notes.md` (III).
+- [x] **fsync auf virtuellen Handles gewrappt** – EBADF brach media_kits
+      player.open; devoptab-Toleranz in der Compat-Schicht.
+- [x] **Log-Rotation** – `ui_app.log` wird zu `.alt` rotiert statt
+      ueberschrieben; nach einem harten Konsolen-Absturz ist die Datei
+      die einzige Quelle des Berichts.
+- [x] **Referenz-App-Feldtest Video**: Intro und Cloud-Filme (WebDAV-Cloud, ueber
+      app-seitigen TLS-Proxy) laufen mit Bild und Ton. App-seitige
+      Switch-Anpassungen leben im eigenen Repo **Referenz-App-Switch-Repo**
+      (lokaler TLS-Proxy + HLS-Umschreibung, Resolver-DoH,
+      Relay-Route) – FFmpeg des Portlibs hat kein TLS,
+      Horizon keine Kindprozesse (kein curl-Fallback).
+- [ ] Relay: nginx-Location auf dem Coolify-Host steht noch
+      aus (Snippet dokumentiert); Hoster-Resolver auf Hardware
+      gegentesten.
+- [ ] Ein harter Konsolen-Absturz beim Video-Start (vor der
+      Ein-Kontext-Architektur) blieb unerklaert – Log brach in
+      Binaermuell ab, kein Handler lief. Beobachten.
 - [ ] `package_info` (Kanal dev.fluttercommunity.plus/package_info) –
       kleiner Baustein, Werte aus dem Build.
 - [ ] Aufräumen: doppelter is_horizon-Block in flutter/skia/BUILD.gn
       (der spätere gewinnt; bei frischem Checkout glätten).
+- [ ] gen_kernel laeuft ohne `-Ddart.vm.product=true` – kDebugMode ist
+      im AOT-Build wahr, Debug-Pfade (media_kit NativeReferenceHolder)
+      laufen mit. Eigener Zyklus.
 
 ## Fehlersuche vom 2026-08-10 – abgeschlossen
 

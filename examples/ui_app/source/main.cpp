@@ -57,6 +57,20 @@ extern "C" bool flutter_libnx_egl_make_current(void);
 extern "C" bool flutter_libnx_egl_clear_current(void);
 extern "C" bool flutter_libnx_egl_present(void);
 extern "C" void* flutter_libnx_egl_resolve(const char* name);
+// Aus media_kit_video_horizon.cpp: der Kanal com.alexmercerind/
+// media_kit_video und die mpv-Render-Bruecke in externe Flutter-Texturen.
+extern "C" bool flutter_libnx_handle_media_kit_video(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine,
+    const FlutterPlatformMessage* message);
+extern "C" bool flutter_libnx_media_kit_texture_frame(
+    void* user_data,
+    int64_t texture_id,
+    size_t width,
+    size_t height,
+    FlutterOpenGLTexture* texture_out);
+extern "C" void flutter_libnx_media_kit_video_pump(
+    FLUTTER_API_SYMBOL(FlutterEngine) engine);
+extern "C" void flutter_libnx_media_kit_video_shutdown(void);
 
 namespace {
 
@@ -432,6 +446,12 @@ void PlatformMessageCallback(const FlutterPlatformMessage* message,
     return;
   }
 
+  // Video: media_kit_video (StandardMethodCodec), siehe
+  // media_kit_video_horizon.cpp.
+  if (flutter_libnx_handle_media_kit_video(g_engine, message)) {
+    return;
+  }
+
   // Die Plugin-Kanäle (StandardMethodCodec) wohnen im Embedder, nicht hier -
   // sie gelten für jede App, nicht nur für dieses Beispiel.
   if (flutter_libnx_handle_plugin_message(g_engine, message)) {
@@ -532,11 +552,21 @@ int main(int argc, char* argv[]) {
   // Zeiger. Eine leere/verwaiste Datei aus einem frueheren Lauf liefert
   // Muellzeiger (FormatException, dann Instruction Abort) - und anders
   // als auf Linux ueberlebt /tmp auf der SD-Karte jeden Neustart.
+  //
+  // KORRIGIERT (2026-08-16): Der Name traegt KEINEN fuehrenden Punkt
+  // (media_kit native_reference_holder.dart:123 -
+  // "com.alexmercerind.media_kit.NativeReferenceHolder.$pid"). Das alte
+  // Muster ".com..." hat nie etwas geloescht - und weil die PID des
+  // Wirtsprozesses ueber hbmenu-Reloads stabil ist, fand jeder Lauf die
+  // Datei des vorigen. Eine leere (Flush im Vorlauf gescheitert) lieferte
+  // int.parse("") -> FormatException, player.handle wurde nie fertig, und
+  // media_kit_video rief nie VideoOutputManager.Create - das Intro blieb
+  // deshalb ohne Player.
   {
     DIR* tmp_dir = opendir("/tmp");
     if (tmp_dir != nullptr) {
       while (dirent* entry = readdir(tmp_dir)) {
-        if (strncmp(entry->d_name, ".com.alexmercerind.media_kit", 28) == 0) {
+        if (strncmp(entry->d_name, "com.alexmercerind.media_kit", 27) == 0) {
           const std::string stale = std::string("/tmp/") + entry->d_name;
           remove(stale.c_str());
           LOG_INFO("Altlast entfernt: %s", stale.c_str());
@@ -636,6 +666,11 @@ int main(int argc, char* argv[]) {
     renderer.open_gl.gl_proc_resolver = [](void*, const char* name) {
       return flutter_libnx_egl_resolve(name);
     };
+    // Externe Texturen (media_kit-Video): Ohne diesen Callback legt die
+    // Engine gar keinen ExternalTextureResolver an, und
+    // FlutterEngineRegisterExternalTexture schluege fehl.
+    renderer.open_gl.gl_external_texture_frame_callback =
+        flutter_libnx_media_kit_texture_frame;
   } else {
     renderer.type = kSoftware;
     renderer.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
@@ -797,6 +832,11 @@ int main(int argc, char* argv[]) {
     // mehr, auf dem sie das tun könnte.
     task_runner.RunExpiredTasks(engine);
 
+    // Fertige Videoframes an die Engine melden. Muss auf diesem Thread
+    // geschehen (MarkExternalTextureFrameAvailable verlangt den
+    // Plattform-Thread); der mpv-Render-Thread setzt nur ein Flag.
+    flutter_libnx_media_kit_video_pump(engine);
+
     if (!focus_sent && g_first_frame_presented && engine != nullptr) {
       FlutterViewFocusEvent focus = {};
       focus.struct_size = sizeof(FlutterViewFocusEvent);
@@ -826,6 +866,11 @@ int main(int argc, char* argv[]) {
   }
 
   g_platform = nullptr;
+
+  // Erst den mpv-Render-Thread einsammeln (er haelt den geteilten
+  // EGL-Kontext gebunden und gibt die mpv-Render-Kontexte frei), dann darf
+  // EGL herunterfahren.
+  flutter_libnx_media_kit_video_shutdown();
 
   // Sessions schliessen, die den NRO-Wechsel sonst ueberleben wuerden.
   //

@@ -6,6 +6,101 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-16 (III) – Die Video-Bruecke: media_kit liefert Bild und Ton
+
+**Auf Hardware bestaetigt: Das Referenz-App-Intro laeuft mit Bild (richtige
+Lage) und Ton**, ueber mehrere Player-Zyklen stabil, sauberer Abbau. Der
+Weg dorthin waren sechs Befunde, jeder verdeckte den naechsten - und drei
+davon sind Familienmitglieder bekannter Muster.
+
+### Der Kanal (media_kit_video_horizon.cpp)
+
+`com.alexmercerind/media_kit_video`, StandardMethodCodec. Create/SetSize/
+Dispose kommen mit Zahlen als Dezimalstrings; zurueck erwartet Dart einen
+`VideoOutput.Resize`-Methodenaufruf mit handle/id als **int**. Dart wartet
+nach Create, bis die erste Resize-Meldung die Textur-ID setzt - wer sie
+nicht schickt, laesst create() ewig haengen.
+
+### Befund 1: media_kits /tmp-Falle, zweiter Akt
+
+Die Altlasten-Bereinigung aus (II) hat nie gegriffen: Der Dateiname traegt
+KEINEN fuehrenden Punkt (`com.alexmercerind.media_kit.NativeReferenceHolder.
+$pid`, native_reference_holder.dart:123) - und die PID des Wirtsprozesses
+ist ueber hbmenu-Reloads konstant (hier: 1). Jeder Lauf fand die Datei des
+vorigen; eine leere (Flush gescheitert) lieferte `int.parse("")` ->
+FormatException -> `player.handle` wurde nie fertig -> der Kanal wurde nie
+gerufen. Praefix in main.cpp korrigiert. Grundursache obendrein: Der Code
+laeuft nur, weil `kDebugMode` wahr ist - gen_kernel bekommt kein
+`-Ddart.vm.product=true` (offene Aufgabe in build-dart-app.ps1).
+
+### Befund 2: fsync auf virtuellen Handles (Familienmitglied)
+
+`RandomAccessFile.flush` -> fsync(virtuelles Handle) -> newlib kennt die
+Nummer nicht -> EBADF -> Exception mitten in media_kits player.open. fsync
+war der einzige nicht gewrappte Dateiaufruf der Compat-Schicht. Jetzt:
+`--wrap=fsync`, Uebersetzung auf den echten Deskriptor, devoptab-Toleranz
+(EBADF/ENOSYS/EINVAL -> 0; FAT kennt keine Haltbarkeit).
+
+### Befund 3: eglBindAPI ist Per-Thread-Zustand
+
+Der geteilte Kontext scheiterte auf dem Render-Thread mit 0x3004
+(EGL_BAD_ATTRIBUTE): eglBindAPI(EGL_OPENGL_API) galt nur fuer den
+Hauptthread; der neue Thread stand auf GLES, und dafuer sind die
+Core-Profile-Attribute ungueltig.
+
+### Befund 4: nouveau vertraegt keine nebenlaeufige Submission
+
+Erste Architektur (eigener mpv-Render-Thread, geteilter Kontext): Data
+Abort in `nvc0_bufctx_fence` aus `nvc0_state_validate_3d` (FAR=0x143),
+sobald Skia und mpv gleichzeitig Kommandos absetzten. Adressaufloesung
+ueber den Bezugspunkt des Crash-Handlers + `scripts/resolve-crash.sh`.
+Konsequenz: EIN GL-Thread fuer alles.
+
+### Befund 5: Ohne Render-Kontext waehlt mpv keine Videospur (Henne-Ei)
+
+Lazy-Erzeugung im Frame-Callback verhungerte: kein Render-Kontext -> mpv
+laesst Video aus -> keine videoParams -> media_kit schickt nie SetSize ->
+Rechteck bleibt 0x0 -> das Widget wird nie komponiert -> der Callback (der
+den Kontext anlegen sollte) laeuft nie. Loesung: Eager-Erzeugung direkt
+nach Create als Task auf dem Raster-Thread (FlutterEnginePostRenderThread-
+Task) - derselbe Weg traegt auch Dispose (Freigabe MUSS vor Darts
+mpv_terminate_destroy liegen und auf dem GL-Thread laufen).
+
+### Befund 6: Textur-Sharing zwischen Kontexten ist auf diesem Mesa kaputt
+
+Mit geteiltem Kontext (Rendern im Frame-Callback, Kontextwechsel mit
+Sichern/Wiederherstellen) blieb der Schirm schwarz, obwohl die Pixelprobe
+im Schreibkontext ein weisses, volldeckendes Bild sah (R=254 G=255 B=254
+A=255) - Skias Fensterkontext sah die Inhalte nie. Endgueltige
+Architektur: **mpv rendert direkt in Skias Fensterkontext**, im
+Textur-Frame-Callback auf dem Raster-Thread. Das ist verabredet: Die
+Engine ruft vor dem Callback `resetContext(kAll_GrBackendState)`
+(embedder_external_texture_gl.cc) und rechnet mit GL-Zustandsaenderungen.
+Ein Puffer genuegt (Erzeuger = Verbraucher), glFlush reicht.
+
+### Kleinigkeiten mit Lehrwert
+
+* `flip_y=0`, empirisch: mit 1 stand das Bild auf dem Kopf (obwohl die
+  Engine kTopLeft borgt - mpvs ungeflippte FBO-Ausgabe liegt bereits
+  zeilenrichtig fuer diese Lesart).
+* Instruction Abort PC=0 nach "render #1 ok": selbst eingebauter Fehler -
+  Struct-Member `Finish` ergaenzt, aber das Aufloesen in Load() vergessen.
+  Null-Funktionszeiger. Dieselbe Anker-Lektion wie beim Patchen.
+* mpvs Update-Callback laeuft auf mpv-internen Threads und darf nur ein
+  Flag setzen; MarkExternalTextureFrameAvailable verlangt den
+  Plattform-Thread (DCHECK in Shell) - die Hauptschleife pumpt.
+* Alpha war NICHT das Problem (Probe: A=255), der Zwangs-Alpha-Clear
+  nach jedem Render bleibt trotzdem als Schutz drin.
+
+**Offen:** Cloud-Playback (Player-Seite). Beobachtet: ENOBUFS (errno 105)
+ist zurueck, sobald die Player-Seite aufgeht - mpv/FFmpeg-Sockets kommen
+zu Darts Verbindungen dazu, der 8-MB-Transferspeicher war vor dem
+Stream-Open leer. sb_efficiency/Sessions auf 24 erhoeht (24 MB Pool),
+Wirkung noch unbestaetigt. Ein frueher harter Konsolen-Absturz beim
+Cloud-Video (vor der Ein-Kontext-Architektur, ohne Log) blieb unerklaert.
+
+---
+
 ## 2026-08-16 (II) – libmpv in der NRO und der Fall der letzten Mauer: FFI-Callbacks
 
 **Auf Hardware bestätigt: Dart-FFI-Callbacks funktionieren** - der von

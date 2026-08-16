@@ -25,6 +25,7 @@ FILE* g_file = nullptr;
 int g_nxlink_fd = -1;
 int g_remote_fd = -1;
 bool g_socket_ready = false;
+bool g_socket_fell_back = false;
 bool g_initialized = false;
 
 // Der Socket-Dienst darf nur einmal hochgefahren werden, wird aber von zwei
@@ -39,6 +40,13 @@ bool EnsureSocket() {
   // Dutzende parallele TLS-Verbindungen (DoH, WebDAV, Relay, Thumbnails).
   // Speicher ist reichlich da (3-GB-Heap); grosszuegige Puffer und
   // Sessions sind der richtige Tausch.
+  // GELERNT (2026-08-16, zweiter Anlauf): 24/24 wurde abgelehnt (der stille
+  // Rueckfall verschleierte das anfangs - er meldet sich jetzt). Verdacht:
+  // Das Session-Limit des Dienstes, nicht der Speicher. Deshalb NUR die
+  // Effizienz (Puffer-Pool) angehoben, Sessions bleiben bei 16. Der Bedarf
+  // ist real: Mit Pool 8 war nach dem ersten Cloud-Film Schluss - der
+  // Stream-Proxy verdoppelt die Sockets (mpv->Proxy->WebDAV-Cloud), und FFmpeg
+  // bekam nicht mal mehr eine Loopback-Verbindung (ENOBUFS).
   constexpr SocketInitConfig kConfig = {
       .tcp_tx_buf_size = 128 * 1024,
       .tcp_rx_buf_size = 128 * 1024,
@@ -46,15 +54,19 @@ bool EnsureSocket() {
       .tcp_rx_buf_max_size = 512 * 1024,
       .udp_tx_buf_size = 0x2400,
       .udp_rx_buf_size = 0xA500,
-      .sb_efficiency = 8,
+      .sb_efficiency = 24,
       .num_bsd_sessions = 16,
       .bsd_service_type = BsdServiceType_User,
   };
-  if (R_SUCCEEDED(socketInitialize(&kConfig))) {
+  const Result big = socketInitialize(&kConfig);
+  if (R_SUCCEEDED(big)) {
     g_socket_ready = true;
   } else if (R_SUCCEEDED(socketInitializeDefault())) {
-    // Rueckfall, falls die grosse Konfiguration abgelehnt wird.
+    // Rueckfall, falls die grosse Konfiguration abgelehnt wird. Die
+    // Meldung kann erst NACH LogInit sichtbar werden - deshalb merkt sich
+    // der Aufrufer das Ergebnis ueber flutter_libnx_socket_config_fell_back.
     g_socket_ready = true;
+    g_socket_fell_back = true;
   }
   return g_socket_ready;
 }
@@ -182,6 +194,15 @@ bool LogInit(const LogConfig& config) {
 
   if (config.file_path != nullptr) {
     MakeParentDirs(config.file_path);
+    // Rotation statt Ueberschreiben: Nach einem harten Konsolen-Absturz ist
+    // die Datei die einzige Quelle des Absturzberichts (die TCP-Verbindung
+    // friert ohne FIN ein und liefert die letzten Zeilen nie aus). Ein
+    // Neustart mit "w" hat diese Beweise am 2026-08-16 einmal vernichtet.
+    {
+      const std::string previous = std::string(config.file_path) + ".alt";
+      std::remove(previous.c_str());
+      std::rename(config.file_path, previous.c_str());
+    }
     g_file = std::fopen(config.file_path, "w");
     if (g_file != nullptr) {
       any_sink = true;
@@ -196,6 +217,13 @@ bool LogInit(const LogConfig& config) {
              config.to_stdout ? 1 : 0, g_nxlink_fd >= 0 ? 1 : 0,
              g_remote_fd >= 0 ? 1 : 0,
              g_file != nullptr ? config.file_path : "aus");
+    if (g_socket_fell_back) {
+      // Sichtbar machen, was vorher still passierte: Mit den Winz-Defaults
+      // (3 Sessions) erklaert sich jedes spaetere ENOBUFS von selbst.
+      LogWrite(LogLevel::kWarn, __FILE__, __LINE__,
+               "Socket-Dienst laeuft mit DEFAULT-Konfiguration - die eigene "
+               "wurde abgelehnt, ENOBUFS ist damit vorprogrammiert");
+    }
   }
   return any_sink;
 }

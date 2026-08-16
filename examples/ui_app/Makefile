@@ -84,6 +84,9 @@ WRAPS	+=	-Wl,--wrap=stat
 # Einzelheiten in posix_compat_horizon.cpp.
 WRAPS	+=	-Wl,--wrap=open -Wl,--wrap=write -Wl,--wrap=lseek
 WRAPS	+=	-Wl,--wrap=ftruncate -Wl,--wrap=fcntl
+# fsync auf virtuellen Handles: newlib kennt die Nummer nicht (EBADF beim
+# flush von Dart/media_kit). Uebersetzung + FAT-Toleranz in der Compat-Schicht.
+WRAPS	+=	-Wl,--wrap=fsync
 
 # DIAGNOSE (flutter-libnx): Waechter um jede Heap-Allokation, siehe
 # embedder/src/platform/heap_guard_horizon.cpp. Sucht die Speicherbeschaedigung,
