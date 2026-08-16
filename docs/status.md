@@ -326,6 +326,33 @@ Logzeile auf der SD-Karte.
       Netzwerk, Video und WebView bleiben Forschungsprojekte
       (`docs/target-apps.md`).
 
+## Meilenstein 5 – GPU-Rendering und der Referenz-App-Feldtest
+
+- [x] **Skia rendert über OpenGL (Mesa/nouveau)** – 31–37 fps im Zeichnen
+      statt 12–15 in Software, auf Hardware gemessen. EGL-Kontext im
+      Embedder (`egl_horizon.cpp`), Laufzeit-Weiche mit
+      Software-Rückfall, Impeller herauskonfiguriert.
+- [x] **Virtuelle Dateihandles** – der Dateidienst hält Dateien exklusiv;
+      pro Pfad ein echter Deskriptor, jedes `open()` ein virtuelles Handle
+      mit eigenem Offset. Damit läuft Hive (Doppel-Open je Box) und jede
+      künftige Bibliothek mit demselben Muster. fcntl-Sperren trivial
+      erfüllt.
+- [x] **Wurzelzertifikate auf Horizon** – `TrustBuiltinRoots` ließ den
+      Rückfall auf die einkompilierten Zertifikate hinter
+      `DART_HOST_OS_LINUX` liegen; Patch erweitert den Guard. TLS/DoH
+      funktionieren seitdem.
+- [x] **Socket-Konfiguration für echte Last** – libnx-Defaults (3
+      Sessions, kleine Puffer) brachen unter Referenz-App' Paralellität mit
+      ENOBUFS zusammen; jetzt 16 Sessions, 128/512-KB-Puffer.
+- [x] **Referenz-App läuft auf der Konsole:** UI auf der GPU, Lokalmodus,
+      Login, **WebDAV-Cloud-Anmeldung erfolgreich und funktional**. Drei
+      dokumentierte App-Guards (MediaKit/windowManager/IntroPage) im
+      Referenz-App-Repo. Video bleibt Forschungsprojekt.
+- [ ] `package_info` (Kanal dev.fluttercommunity.plus/package_info) –
+      kleiner Baustein, Werte aus dem Build.
+- [ ] Aufräumen: doppelter is_horizon-Block in flutter/skia/BUILD.gn
+      (der spätere gewinnt; bei frischem Checkout glätten).
+
 ## Fehlersuche vom 2026-08-10 – abgeschlossen
 
 **Ergebnis vorweg:** Vier Ursachen lagen hintereinander, jede verdeckte die

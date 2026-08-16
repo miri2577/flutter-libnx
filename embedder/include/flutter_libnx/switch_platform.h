@@ -40,8 +40,13 @@ class SwitchPlatform {
   SwitchPlatform& operator=(const SwitchPlatform&) = delete;
 
   // Richtet Framebuffer und Eingabe ein. Bei false ist nichts allokiert.
+  //
+  // create_framebuffer=false lässt das NWindow unangetastet - nötig für
+  // GPU-Rendering, wo EGL dasselbe Fenster belegt. BeginFrame liefert dann
+  // nullptr; Eingabe und Applet-Lebenszyklus funktionieren unverändert.
   bool Initialize(uint32_t width = kDefaultWidth,
-                  uint32_t height = kDefaultHeight);
+                  uint32_t height = kDefaultHeight,
+                  bool create_framebuffer = true);
   void Shutdown();
 
   // Einmal pro Frame aufrufen: liest Eingaben und wertet Applet-Nachrichten aus.

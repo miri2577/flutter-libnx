@@ -46,6 +46,14 @@ extern "C" void flutter_libnx_sqlite3_probe(void);
 extern "C" bool flutter_libnx_handle_textinput(
     FLUTTER_API_SYMBOL(FlutterEngine) engine,
     const FlutterPlatformMessage* message);
+// Aus egl_horizon.cpp: GPU-Rendering ueber Mesa/nouveau. Scheitert die
+// Initialisierung, faellt main() auf den Software-Renderer zurueck.
+extern "C" bool flutter_libnx_egl_init(void);
+extern "C" void flutter_libnx_egl_shutdown(void);
+extern "C" bool flutter_libnx_egl_make_current(void);
+extern "C" bool flutter_libnx_egl_clear_current(void);
+extern "C" bool flutter_libnx_egl_present(void);
+extern "C" void* flutter_libnx_egl_resolve(const char* name);
 
 namespace {
 
@@ -66,6 +74,8 @@ bool g_psm_ready = false;
 // der Anhaltspunkt, ab dem das View-Fokus-Ereignis einen Empfänger hat
 // (Begründung am Sendeort in main()).
 std::atomic<bool> g_first_frame_presented{false};
+
+void NoteFramePresented();
 
 // Flutter rendert in einen eigenen Puffer und reicht ihn hier herein. Weil der
 // Framebuffer der Switch 5120 Bytes je Zeile hat und das genau 1280 * 4 ist,
@@ -96,41 +106,45 @@ bool SoftwarePresent(void* user_data,
   }
 
   g_platform->EndFrame();
+  NoteFramePresented();
+  return true;
+}
+
+// Beide Renderer melden hier jeden praesentierten Frame: setzt das Flag
+// fuer das View-Fokus-Ereignis und misst die Frame-Abstaende.
+//
+// MESSUNG (Ruckeln): alle 120 gezaehlten Frames eine Zeile. Abstaende ueber
+// 500 ms sind Leerlauf (Flutter zeichnet nur bei Bedarf) und fallen aus der
+// Wertung - die erste Fassung zaehlte sie mit und meldete 7 fps "im Mittel"
+// fuer eine ruhig daliegende App.
+void NoteFramePresented() {
   g_first_frame_presented = true;
 
-  // MESSUNG (Ruckeln): Frame-Abstaende waehrend zusammenhaengenden
-  // Zeichnens, alle 120 gezaehlten Frames eine Zeile. Abstaende ueber
-  // 500 ms sind Leerlauf (Flutter zeichnet nur bei Bedarf) und fallen
-  // aus der Wertung - die erste Fassung zaehlte sie mit und meldete
-  // 7 fps "im Mittel" fuer eine ruhig daliegende App.
-  {
-    static uint64_t last_ns = 0;
-    static uint64_t sum_ns = 0;
-    static uint64_t worst_ns = 0;
-    static int count = 0;
-    const uint64_t now_ns = FlutterEngineGetCurrentTime();
-    if (last_ns != 0) {
-      const uint64_t delta = now_ns - last_ns;
-      if (delta > 500'000'000ULL) {
-        // Pause: Fenster weiterlaufen lassen, aber den Abstand nicht werten.
-      } else {
-        sum_ns += delta;
-        if (delta > worst_ns) {
-          worst_ns = delta;
-        }
-        if (++count == 120) {
-          LOG_INFO("Frames: %.1f/s im Zeichnen, schlechtester Abstand %.0f ms",
-                   120.0 * 1e9 / static_cast<double>(sum_ns),
-                   static_cast<double>(worst_ns) / 1e6);
-          sum_ns = 0;
-          worst_ns = 0;
-          count = 0;
-        }
+  static uint64_t last_ns = 0;
+  static uint64_t sum_ns = 0;
+  static uint64_t worst_ns = 0;
+  static int count = 0;
+  const uint64_t now_ns = FlutterEngineGetCurrentTime();
+  if (last_ns != 0) {
+    const uint64_t delta = now_ns - last_ns;
+    if (delta > 500'000'000ULL) {
+      // Pause: Fenster weiterlaufen lassen, aber den Abstand nicht werten.
+    } else {
+      sum_ns += delta;
+      if (delta > worst_ns) {
+        worst_ns = delta;
+      }
+      if (++count == 120) {
+        LOG_INFO("Frames: %.1f/s im Zeichnen, schlechtester Abstand %.0f ms",
+                 120.0 * 1e9 / static_cast<double>(sum_ns),
+                 static_cast<double>(worst_ns) / 1e6);
+        sum_ns = 0;
+        worst_ns = 0;
+        count = 0;
       }
     }
-    last_ns = now_ns;
   }
-  return true;
+  last_ns = now_ns;
 }
 
 void EngineLog(const char* tag, const char* message, void* user_data) {
@@ -519,14 +533,22 @@ int main(int argc, char* argv[]) {
   LOG_INFO("romfs bereit");
   flutter_libnx_scan_heap("nach romfsInit");
 
+  // GPU zuerst: Gelingt der EGL-Aufbau, rendert Skia ueber Mesa/nouveau
+  // direkt auf das NWindow - der Software-Framebuffer darf dann gar nicht
+  // erst entstehen (beide wollen dasselbe Fenster). Scheitert EGL, laeuft
+  // alles wie bisher in Software weiter.
+  const bool use_gpu = flutter_libnx_egl_init();
+
   flutter_libnx::SwitchPlatform platform;
-  if (!platform.Initialize()) {
-    LOG_ERROR("Framebuffer konnte nicht eingerichtet werden");
+  if (!platform.Initialize(flutter_libnx::kDefaultWidth,
+                           flutter_libnx::kDefaultHeight,
+                           /*create_framebuffer=*/!use_gpu)) {
+    LOG_ERROR("Plattform konnte nicht eingerichtet werden");
     flutter_libnx::LogShutdown();
     return 1;
   }
   g_platform = &platform;
-  flutter_libnx_scan_heap("nach framebufferCreate");
+  flutter_libnx_scan_heap(use_gpu ? "nach EGL-Init" : "nach framebufferCreate");
 
   // Nachweis, dass die Snapshot-Daten den Weg durch Linker und NRO-Verpackung
   // unbeschadet ueberstanden haben. Das Magic stand im aot_poc schon einmal
@@ -568,9 +590,32 @@ int main(int argc, char* argv[]) {
            static_cast<int>(appletGetAppletType()));
 
   FlutterRendererConfig renderer = {};
-  renderer.type = kSoftware;
-  renderer.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
-  renderer.software.surface_present_callback = SoftwarePresent;
+  if (use_gpu) {
+    renderer.type = kOpenGL;
+    renderer.open_gl.struct_size = sizeof(FlutterOpenGLRendererConfig);
+    renderer.open_gl.make_current = [](void*) {
+      return flutter_libnx_egl_make_current();
+    };
+    renderer.open_gl.clear_current = [](void*) {
+      return flutter_libnx_egl_clear_current();
+    };
+    renderer.open_gl.present = [](void*) {
+      const bool shown = flutter_libnx_egl_present();
+      if (shown) {
+        NoteFramePresented();
+      }
+      return shown;
+    };
+    // 0 = das Standard-Framebuffer der EGL-Oberflaeche.
+    renderer.open_gl.fbo_callback = [](void*) -> uint32_t { return 0; };
+    renderer.open_gl.gl_proc_resolver = [](void*, const char* name) {
+      return flutter_libnx_egl_resolve(name);
+    };
+  } else {
+    renderer.type = kSoftware;
+    renderer.software.struct_size = sizeof(FlutterSoftwareRendererConfig);
+    renderer.software.surface_present_callback = SoftwarePresent;
+  }
 
   FlutterProjectArgs project = {};
   project.struct_size = sizeof(FlutterProjectArgs);
@@ -764,6 +809,7 @@ int main(int argc, char* argv[]) {
   // Dienstes erschoepft, und der naechste Verbindungsaufbau im Prozess
   // (hbmenu-Reload) starb mit 2011-0102 (HIPC, "out of sessions").
   // romfs haengt an einem Storage-Handle mit derselben Lebensdauer.
+  flutter_libnx_egl_shutdown();
   appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
   flutter_libnx_fonts_cleanup();
   flutter_libnx_random_cleanup();

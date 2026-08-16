@@ -198,6 +198,64 @@ bool PathIsDirectory(const std::string& path) {
   return S_ISDIR(st.st_mode);
 }
 
+// --- Virtuelle Dateihandles -------------------------------------------------
+//
+// Fund vom 2026-08-15 (Referenz-App/Hive): Der Dateidienst haelt offene Dateien
+// EXKLUSIV - ein zweites open() auf denselben Pfad scheitert mit EIO.
+// Hive oeffnet jede Box doppelt (ein Lese-, ein Schreib-Handle mit eigener
+// Position), sqlite oeffnet Journal neben Datenbank, und jede weitere
+// Bibliothek mit diesem Muster liefe in dieselbe Wand.
+//
+// Deshalb vergibt open() hier grundsaetzlich VIRTUELLE Handles: Pro Pfad
+// existiert genau ein echter Deskriptor (refcounted), jedes virtuelle
+// Handle traegt seinen eigenen Offset, und die Wrapper (read/write/lseek/
+// fstat/ftruncate/close) setzen vor jedem Zugriff die echte Position um.
+// Eine Sperre serialisiert die Zugriffe auf den Basisdeskriptor.
+//
+// Sockets und Pipes sind nicht betroffen - sie entstehen nie ueber open().
+
+constexpr int kFileHandleBase = 0x50000000;
+constexpr int kMaxBaseFiles = 64;
+constexpr int kMaxVirtualFiles = 128;
+
+struct BaseFile {
+  bool in_use = false;
+  std::string path;
+  int real_fd = -1;
+  int refs = 0;
+};
+
+struct VirtualFile {
+  bool in_use = false;
+  int base = -1;
+  off_t offset = 0;
+  bool append = false;
+};
+
+struct FileState {
+  std::mutex mutex;
+  BaseFile bases[kMaxBaseFiles];
+  VirtualFile files[kMaxVirtualFiles];
+};
+
+FileState& GetFileState() {
+  static FileState state;
+  return state;
+}
+
+bool IsFileHandle(int fd) {
+  return fd >= kFileHandleBase && fd < kFileHandleBase + kMaxVirtualFiles;
+}
+
+// Nur mit gehaltener Sperre aufrufen.
+VirtualFile* FileFor(FileState& state, int fd) {
+  if (!IsFileHandle(fd)) {
+    return nullptr;
+  }
+  VirtualFile& file = state.files[fd - kFileHandleBase];
+  return file.in_use ? &file : nullptr;
+}
+
 }  // namespace
 
 extern "C" {
@@ -459,6 +517,186 @@ int utimensat(int dirfd, const char* path, const struct timespec times[2],
   return -1;
 }
 
+// --- Wraps der virtuellen Dateihandles --------------------------------------
+
+extern "C" int __real_open(const char* path, int flags, ...);
+extern "C" ssize_t __real_write(int fd, const void* buf, size_t count);
+extern "C" off_t __real_lseek(int fd, off_t offset, int whence);
+extern "C" int __real_ftruncate(int fd, off_t length);
+extern "C" int __real_fcntl(int fd, int cmd, ...);
+
+extern "C" int __wrap_open(const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if ((flags & O_CREAT) != 0) {
+    va_list args;
+    va_start(args, flags);
+    mode = static_cast<mode_t>(va_arg(args, int));
+    va_end(args);
+  }
+  if (path == nullptr) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  FileState& state = GetFileState();
+  std::lock_guard<std::mutex> lock(state.mutex);
+
+  // Existiert schon ein Basisdeskriptor fuer den Pfad?
+  int base_index = -1;
+  for (int i = 0; i < kMaxBaseFiles; i++) {
+    if (state.bases[i].in_use && state.bases[i].path == path) {
+      base_index = i;
+      break;
+    }
+  }
+
+  if (base_index >= 0) {
+    if ((flags & O_CREAT) != 0 && (flags & O_EXCL) != 0) {
+      errno = EEXIST;
+      return -1;
+    }
+    if ((flags & O_TRUNC) != 0) {
+      __real_ftruncate(state.bases[base_index].real_fd, 0);
+    }
+  } else {
+    // O_APPEND wird je virtuellem Handle emuliert. Der Basisdeskriptor
+    // bekommt maximalen Zugriff (O_RDWR): Der erste Oeffner koennte nur
+    // lesen wollen, ein spaeterer will schreiben - beide teilen sich
+    // dasselbe echte Handle. Rueckfall auf die angefragten Rechte fuer
+    // nur-lesbare Dateisysteme (romfs).
+    int real = __real_open(
+        path, (flags & ~(O_APPEND | O_ACCMODE)) | O_RDWR, mode);
+    if (real < 0) {
+      real = __real_open(path, flags & ~O_APPEND, mode);
+    }
+    if (real < 0) {
+      return -1;
+    }
+    for (int i = 0; i < kMaxBaseFiles; i++) {
+      if (!state.bases[i].in_use) {
+        base_index = i;
+        break;
+      }
+    }
+    if (base_index < 0) {
+      __real_close(real);
+      errno = EMFILE;
+      return -1;
+    }
+    state.bases[base_index].in_use = true;
+    state.bases[base_index].path = path;
+    state.bases[base_index].real_fd = real;
+    state.bases[base_index].refs = 0;
+  }
+
+  for (int i = 0; i < kMaxVirtualFiles; i++) {
+    if (!state.files[i].in_use) {
+      state.files[i].in_use = true;
+      state.files[i].base = base_index;
+      state.files[i].offset = 0;
+      state.files[i].append = (flags & O_APPEND) != 0;
+      state.bases[base_index].refs++;
+      return kFileHandleBase + i;
+    }
+  }
+  if (state.bases[base_index].refs == 0) {
+    __real_close(state.bases[base_index].real_fd);
+    state.bases[base_index].in_use = false;
+  }
+  errno = EMFILE;
+  return -1;
+}
+
+extern "C" ssize_t __wrap_write(int fd, const void* buf, size_t count) {
+  FileState& state = GetFileState();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      BaseFile& base = state.bases[file->base];
+      if (file->append) {
+        file->offset = __real_lseek(base.real_fd, 0, SEEK_END);
+      } else if (__real_lseek(base.real_fd, file->offset, SEEK_SET) < 0) {
+        return -1;
+      }
+      const ssize_t written = __real_write(base.real_fd, buf, count);
+      if (written > 0) {
+        file->offset += written;
+      }
+      return written;
+    }
+  }
+  return __real_write(fd, buf, count);
+}
+
+extern "C" off_t __wrap_lseek(int fd, off_t offset, int whence) {
+  FileState& state = GetFileState();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      BaseFile& base = state.bases[file->base];
+      off_t target = 0;
+      if (whence == SEEK_SET) {
+        target = offset;
+      } else if (whence == SEEK_CUR) {
+        target = file->offset + offset;
+      } else if (whence == SEEK_END) {
+        struct stat st = {};
+        if (__real_fstat(base.real_fd, &st) != 0) {
+          return -1;
+        }
+        target = st.st_size + offset;
+      } else {
+        errno = EINVAL;
+        return -1;
+      }
+      if (target < 0) {
+        errno = EINVAL;
+        return -1;
+      }
+      file->offset = target;
+      return target;
+    }
+  }
+  return __real_lseek(fd, offset, whence);
+}
+
+extern "C" int __wrap_ftruncate(int fd, off_t length) {
+  FileState& state = GetFileState();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      return __real_ftruncate(state.bases[file->base].real_fd, length);
+    }
+  }
+  return __real_ftruncate(fd, length);
+}
+
+// Dateisperren: Es gibt genau einen Prozess auf der Konsole - jede Sperre
+// ist trivially erfuellt. Dart (RandomAccessFile.lock, von Hive benutzt)
+// erwartet Erfolg, nicht ENOSYS.
+extern "C" int __wrap_fcntl(int fd, int cmd, ...) {
+  if (cmd == F_SETLK || cmd == F_SETLKW || cmd == F_GETLK) {
+    if (cmd == F_GETLK) {
+      va_list args;
+      va_start(args, cmd);
+      struct flock* lock_info = va_arg(args, struct flock*);
+      va_end(args);
+      if (lock_info != nullptr) {
+        lock_info->l_type = F_UNLCK;
+      }
+    }
+    return 0;
+  }
+  va_list args;
+  va_start(args, cmd);
+  void* arg = va_arg(args, void*);
+  va_end(args);
+  return __real_fcntl(fd, cmd, arg);
+}
+
 // Für sqlite3 (os_unix.c, robust_open/robustFchown). FAT kennt keine
 // Eigentümer: geteuid liefert bewusst NICHT 0 - als "root" würde sqlite
 // versuchen, per fchown Eigentümer zu erhalten, die es hier nicht gibt.
@@ -521,15 +759,17 @@ extern "C" int __wrap_stat(const char* path, struct stat* st) {
 // Datei) reicht er unveraendert durch.
 extern "C" ssize_t __real_read(int fd, void* buf, size_t count);
 
-extern "C" ssize_t __wrap_read(int fd, void* buf, size_t count) {
-  const ssize_t got = __real_read(fd, buf, count);
+// Lesen ab/hinter EOF liefert auf devoptab -1 statt 0 - dieselbe Falle
+// betrifft die direkten __real_read-Zugriffe der Virtualisierung.
+static ssize_t ReadWithEofFix(int real_fd, void* buf, size_t count) {
+  const ssize_t got = __real_read(real_fd, buf, count);
   if (got >= 0) {
     return got;
   }
   const int saved_errno = errno;
   struct stat st = {};
-  if (__real_fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
-    const off_t pos = ::lseek(fd, 0, SEEK_CUR);
+  if (__real_fstat(real_fd, &st) == 0 && S_ISREG(st.st_mode)) {
+    const off_t pos = __real_lseek(real_fd, 0, SEEK_CUR);
     if (pos >= 0 && pos >= st.st_size) {
       return 0;  // EOF, wie POSIX es verlangt
     }
@@ -538,7 +778,44 @@ extern "C" ssize_t __wrap_read(int fd, void* buf, size_t count) {
   return -1;
 }
 
+extern "C" ssize_t __wrap_read(int fd, void* buf, size_t count) {
+  FileState& state = GetFileState();
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      BaseFile& base = state.bases[file->base];
+      if (__real_lseek(base.real_fd, file->offset, SEEK_SET) < 0) {
+        return -1;
+      }
+      const ssize_t got = ReadWithEofFix(base.real_fd, buf, count);
+      if (got > 0) {
+        file->offset += got;
+      }
+      return got;
+    }
+  }
+  return ReadWithEofFix(fd, buf, count);
+}
+
 int __wrap_close(int fd) {
+  {
+    FileState& state = GetFileState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      BaseFile& base = state.bases[file->base];
+      file->in_use = false;
+      base.refs--;
+      if (base.refs == 0) {
+        const int rc = __real_close(base.real_fd);
+        base.in_use = false;
+        base.path.clear();
+        return rc;
+      }
+      return 0;
+    }
+  }
   if (ReleaseHandle(fd)) {
     return 0;
   }
@@ -550,6 +827,25 @@ int __wrap_close(int fd) {
 }
 
 int __wrap_dup(int fd) {
+  {
+    FileState& state = GetFileState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      for (int i = 0; i < kMaxVirtualFiles; i++) {
+        if (!state.files[i].in_use) {
+          state.files[i].in_use = true;
+          state.files[i].base = file->base;
+          state.files[i].offset = file->offset;
+          state.files[i].append = file->append;
+          state.bases[file->base].refs++;
+          return kFileHandleBase + i;
+        }
+      }
+      errno = EMFILE;
+      return -1;
+    }
+  }
   std::string path;
   if (LookupPath(fd, &path)) {
     const int handle = AllocHandle(path);
@@ -567,6 +863,14 @@ int __wrap_dup(int fd) {
 }
 
 int __wrap_fstat(int fd, struct stat* st) {
+  {
+    FileState& state = GetFileState();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    VirtualFile* file = FileFor(state, fd);
+    if (file != nullptr) {
+      return __real_fstat(state.bases[file->base].real_fd, st);
+    }
+  }
   std::string path;
   if (LookupPath(fd, &path)) {
     return ::stat(path.c_str(), st);

@@ -8,13 +8,16 @@ SwitchPlatform::~SwitchPlatform() {
   Shutdown();
 }
 
-bool SwitchPlatform::Initialize(uint32_t width, uint32_t height) {
+bool SwitchPlatform::Initialize(uint32_t width,
+                                uint32_t height,
+                                bool create_framebuffer) {
   if (initialized_) {
     LOG_WARN("Initialize() doppelt aufgerufen – ignoriert");
     return true;
   }
 
-  LOG_INFO("initializing platform (%ux%u)", width, height);
+  LOG_INFO("initializing platform (%ux%u, framebuffer=%d)", width, height,
+           create_framebuffer ? 1 : 0);
 
   // Eingabe zuerst: Sie hat keine Ressourcen, die wir bei einem Framebuffer-
   // Fehlschlag wieder freigeben müssten.
@@ -37,33 +40,36 @@ bool SwitchPlatform::Initialize(uint32_t width, uint32_t height) {
   // (1280x720), eine Umrechnung entfällt.
   hidInitializeTouchScreen();
 
-  NWindow* window = nwindowGetDefault();
-  if (window == nullptr) {
-    LOG_ERROR("nwindowGetDefault() lieferte nullptr");
-    return false;
-  }
+  if (create_framebuffer) {
+    NWindow* window = nwindowGetDefault();
+    if (window == nullptr) {
+      LOG_ERROR("nwindowGetDefault() lieferte nullptr");
+      return false;
+    }
 
-  Result rc = framebufferCreate(&framebuffer_, window, width, height,
-                                PIXEL_FORMAT_RGBA_8888, 2);
-  if (R_FAILED(rc)) {
-    LOG_ERROR("framebufferCreate fehlgeschlagen: 0x%08x (Modul %u, Beschreibung %u)",
-              rc, R_MODULE(rc), R_DESCRIPTION(rc));
-    return false;
-  }
+    Result rc = framebufferCreate(&framebuffer_, window, width, height,
+                                  PIXEL_FORMAT_RGBA_8888, 2);
+    if (R_FAILED(rc)) {
+      LOG_ERROR(
+          "framebufferCreate fehlgeschlagen: 0x%08x (Modul %u, Beschreibung %u)",
+          rc, R_MODULE(rc), R_DESCRIPTION(rc));
+      return false;
+    }
 
-  // Ohne diesen Schritt liegt der Puffer im Tegra-Block-Linear-Format vor.
-  // Flutter liefert einen linearen RGBA-Puffer, deshalb brauchen wir den
-  // Schattenpuffer – die Umwandlung übernimmt framebufferEnd().
-  rc = framebufferMakeLinear(&framebuffer_);
-  if (R_FAILED(rc)) {
-    LOG_ERROR("framebufferMakeLinear fehlgeschlagen: 0x%08x", rc);
-    framebufferClose(&framebuffer_);
-    return false;
+    // Ohne diesen Schritt liegt der Puffer im Tegra-Block-Linear-Format vor.
+    // Flutter liefert einen linearen RGBA-Puffer, deshalb brauchen wir den
+    // Schattenpuffer – die Umwandlung übernimmt framebufferEnd().
+    rc = framebufferMakeLinear(&framebuffer_);
+    if (R_FAILED(rc)) {
+      LOG_ERROR("framebufferMakeLinear fehlgeschlagen: 0x%08x", rc);
+      framebufferClose(&framebuffer_);
+      return false;
+    }
+    framebuffer_ready_ = true;
   }
 
   width_ = width;
   height_ = height;
-  framebuffer_ready_ = true;
   initialized_ = true;
   applet_running_ = true;
   quit_requested_ = false;

@@ -2858,6 +2858,161 @@ def patch_dart_ffi_dynamic_library_hooks(src: str) -> None:
     )
 
 
+def patch_embedder_gl_defines(src: str) -> None:
+    path = os.path.join(src, "flutter", "shell", "platform", "embedder",
+                        "embedder.cc")
+    # Mit shell_enable_gl=true braucht embedder.cc GL_RGBA8, bekommt auf
+    # Horizon aber keinen GL-Header (Skia loest alles ueber den proc
+    # resolver, Header gibt es nur im Embedder-Programm). Dieselbe Bauart
+    # wie der GL_BGRA8_EXT-Guard direkt darueber.
+    replace_once(
+        path,
+        "#ifndef GL_BGRA8_EXT\n"
+        "#define GL_BGRA8_EXT 0x93A1\n"
+        "#endif\n",
+        "#ifndef GL_BGRA8_EXT\n"
+        "#define GL_BGRA8_EXT 0x93A1\n"
+        "#endif\n"
+        "#ifndef GL_RGBA8\n"
+        "#define GL_RGBA8 0x8058\n"
+        "#endif\n",
+        "embedder.cc (GL_RGBA8-Guard)",
+    )
+    # FML_OS_HORIZON kommt aus fml/build_config.h - fuer die Guards unten.
+    replace_once(
+        path,
+        "// We need GL_BGRA8_EXT for creating SkSurfaces from"
+        " FlutterOpenGLSurfaces\n"
+        "// below.\n",
+        '#include "flutter/fml/build_config.h"\n'
+        "\n"
+        "// We need GL_BGRA8_EXT for creating SkSurfaces from"
+        " FlutterOpenGLSurfaces\n"
+        "// below.\n",
+        "embedder.cc (build_config-Include)",
+    )
+    # Ohne Impeller (impeller_supports_rendering=false) existiert
+    # EmbedderSurfaceGLImpeller nicht - der enable_impeller-Zweig wird fuer
+    # Horizon herauskompiliert. enable_impeller kann hier nie wahr sein.
+    replace_once(
+        path,
+        "        if (enable_impeller) {\n"
+        "          return std::make_unique<flutter::PlatformViewEmbedder>(\n"
+        "              shell,                   // delegate\n"
+        "              shell.GetTaskRunners(),  // task runners\n"
+        "              std::make_unique<flutter::EmbedderSurfaceGLImpeller>(\n"
+        "                  gl_dispatch_table, fbo_reset_after_present,\n"
+        "                  view_embedder),       // embedder_surface\n"
+        "              platform_dispatch_table,  // embedder platform dispatch"
+        " table\n"
+        "              view_embedder             // external view embedder\n"
+        "          );\n"
+        "        }\n",
+        "#if !defined(FML_OS_HORIZON)\n"
+        "        if (enable_impeller) {\n"
+        "          return std::make_unique<flutter::PlatformViewEmbedder>(\n"
+        "              shell,                   // delegate\n"
+        "              shell.GetTaskRunners(),  // task runners\n"
+        "              std::make_unique<flutter::EmbedderSurfaceGLImpeller>(\n"
+        "                  gl_dispatch_table, fbo_reset_after_present,\n"
+        "                  view_embedder),       // embedder_surface\n"
+        "              platform_dispatch_table,  // embedder platform dispatch"
+        " table\n"
+        "              view_embedder             // external view embedder\n"
+        "          );\n"
+        "        }\n"
+        "#endif  // !defined(FML_OS_HORIZON)\n",
+        "embedder.cc (Impeller-GL-Surface-Zweig)",
+    )
+
+
+def patch_dart_security_context(src: str) -> None:
+    path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
+                        "bin", "security_context_linux.cc")
+    # Fund vom 2026-08-15 (Referenz-App, erste echte TLS-Verbindung):
+    # CERTIFICATE_VERIFY_FAILED, weil der Rueckfall auf die einkompilierten
+    # Wurzelzertifikate hinter DART_HOST_OS_LINUX steht - auf Horizon lief
+    # TrustBuiltinRoots komplett leer durch (die /etc/ssl-Pfade gibt es auf
+    # der SD-Karte nicht). Dieselbe Familie wie die stillen Weichen.
+    replace_once(
+        path,
+        "#if defined(DART_HOST_OS_LINUX)\n"
+        "  // Fall back on the compiled-in certs if the standard locations"
+        " don't exist.\n",
+        "#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_HORIZON)\n"
+        "  // Fall back on the compiled-in certs if the standard locations"
+        " don't exist.\n",
+        "dart bin/security_context_linux.cc (Wurzelzertifikate auf Horizon)",
+    )
+
+
+def patch_embedder_external_texture_gl(src: str) -> None:
+    path = os.path.join(src, "flutter", "shell", "platform", "embedder",
+                        "embedder_external_texture_gl.cc")
+    # Blinder Fleck im Upstream: Diese Datei liegt im GL-Grundblock der
+    # sources, zieht aber bedingungslos Impeller-GLES-Header - GL ohne
+    # Impeller baut dort niemand mehr. Auf Horizon gibt es kein Impeller
+    # (impeller_supports_rendering=false, GLES3-Header fehlen); die
+    # Impeller-Anteile wandern hinter FML_OS_HORIZON-Guards. Externe
+    # GL-Texturen ueber den Skia-Pfad bleiben voll funktionsfaehig.
+    replace_once(
+        path,
+        '#include "flutter/fml/logging.h"\n'
+        '#include "impeller/core/texture_descriptor.h"\n'
+        '#include "impeller/display_list/aiks_context.h"\n'
+        '#include "impeller/display_list/dl_image_impeller.h"\n'
+        '#include "impeller/geometry/size.h"\n'
+        '#include "impeller/renderer/backend/gles/context_gles.h"\n'
+        '#include "impeller/renderer/backend/gles/handle_gles.h"\n'
+        '#include "impeller/renderer/backend/gles/texture_gles.h"\n',
+        '#include "flutter/fml/build_config.h"\n'
+        '#include "flutter/fml/logging.h"\n'
+        "#if !defined(FML_OS_HORIZON)\n"
+        '#include "impeller/core/texture_descriptor.h"\n'
+        '#include "impeller/display_list/aiks_context.h"\n'
+        '#include "impeller/display_list/dl_image_impeller.h"\n'
+        '#include "impeller/geometry/size.h"\n'
+        '#include "impeller/renderer/backend/gles/context_gles.h"\n'
+        '#include "impeller/renderer/backend/gles/handle_gles.h"\n'
+        '#include "impeller/renderer/backend/gles/texture_gles.h"\n'
+        "#endif  // !defined(FML_OS_HORIZON)\n",
+        "embedder_external_texture_gl.cc (Impeller-Includes)",
+    )
+    replace_once(
+        path,
+        "  if (!!aiks_context) {\n"
+        "    return ResolveTextureImpeller(texture_id, aiks_context, size);\n"
+        "  } else {\n"
+        "    return ResolveTextureSkia(texture_id, context, size);\n"
+        "  }\n",
+        "#if !defined(FML_OS_HORIZON)\n"
+        "  if (!!aiks_context) {\n"
+        "    return ResolveTextureImpeller(texture_id, aiks_context, size);\n"
+        "  }\n"
+        "#endif\n"
+        "  return ResolveTextureSkia(texture_id, context, size);\n",
+        "embedder_external_texture_gl.cc (ResolveTexture-Weiche)",
+    )
+    replace_once(
+        path,
+        "sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(\n"
+        "    int64_t texture_id,\n",
+        "#if !defined(FML_OS_HORIZON)\n"
+        "sk_sp<DlImage> EmbedderExternalTextureGL::ResolveTextureImpeller(\n"
+        "    int64_t texture_id,\n",
+        "embedder_external_texture_gl.cc (Impeller-Funktion Anfang)",
+    )
+    replace_once(
+        path,
+        "  return impeller::DlImageImpeller::Make(image);\n"
+        "}\n",
+        "  return impeller::DlImageImpeller::Make(image);\n"
+        "}\n"
+        "#endif  // !defined(FML_OS_HORIZON)\n",
+        "embedder_external_texture_gl.cc (Impeller-Funktion Ende)",
+    )
+
+
 def patch_tonic_build_config(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "tonic", "common",
                         "build_config.h")
@@ -3276,8 +3431,9 @@ def patch_skia_config(src: str) -> None:
         path,
         "# Skia public API, generally provided by :skia.\n",
         "if (is_horizon) {\n"
-        "  # Nintendo Switch: nur Software-Rendering.\n"
-        "  skia_use_gl = false\n"
+        "  # Nintendo Switch: GL ueber Mesa/nouveau (seit dem GPU-Meilenstein\n"
+        "  # 2026-08-15; davor stand hier nur Software-Rendering).\n"
+        "  skia_use_gl = true\n"
         "  skia_use_vulkan = false\n"
         "  skia_use_dng_sdk = false\n"
         "\n"
@@ -3299,6 +3455,17 @@ def patch_skia_config(src: str) -> None:
         "\n"
         "# Skia public API, generally provided by :skia.\n",
         "flutter/skia/BUILD.gn (Horizon-Konfiguration)",
+    )
+    # Stufe 2 (GPU-Meilenstein): Baeume, die den Block noch mit
+    # skia_use_gl=false tragen, werden auf GL umgestellt.
+    replace_once(
+        path,
+        "  # Nintendo Switch: nur Software-Rendering.\n"
+        "  skia_use_gl = false\n",
+        "  # Nintendo Switch: GL ueber Mesa/nouveau (seit dem GPU-Meilenstein\n"
+        "  # 2026-08-15; davor stand hier nur Software-Rendering).\n"
+        "  skia_use_gl = true\n",
+        "flutter/skia/BUILD.gn (skia_use_gl fuer Horizon)",
     )
 
     # SkFontHost_FreeType.cpp bindet dlfcn.h ein, um neuere FreeType-Funktionen
@@ -3403,6 +3570,9 @@ def main() -> int:
     patch_dart_platform_utils_dynlib_hooks(SRC)
     patch_dart_ffi_dynamic_library(SRC)
     patch_dart_ffi_dynamic_library_hooks(SRC)
+    patch_embedder_gl_defines(SRC)
+    patch_dart_security_context(SRC)
+    patch_embedder_external_texture_gl(SRC)
     patch_tonic_build_config(SRC)
     patch_absl_cctz(SRC)
     patch_implicit_float_conversion(SRC)

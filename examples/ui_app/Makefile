@@ -76,6 +76,14 @@ WRAPS	+=	-Wl,--wrap=read
 # die Werte per open+fstat nach - sqlite fragt beim Journal-Anlegen genau so
 # die Rechte der offenen Datenbank ab (IOERR_FSTAT 1802).
 WRAPS	+=	-Wl,--wrap=stat
+# Virtuelle Dateihandles: Der Dateidienst haelt offene Dateien exklusiv,
+# ein zweites open() auf denselben Pfad scheitert mit EIO. Hive oeffnet
+# jede Box doppelt (Lese- und Schreib-Handle). Pro Pfad ein echter
+# Deskriptor, jedes open() ein virtuelles Handle mit eigenem Offset;
+# fcntl-Sperren sind auf der Einprozess-Konsole trivial erfuellt.
+# Einzelheiten in posix_compat_horizon.cpp.
+WRAPS	+=	-Wl,--wrap=open -Wl,--wrap=write -Wl,--wrap=lseek
+WRAPS	+=	-Wl,--wrap=ftruncate -Wl,--wrap=fcntl
 
 # DIAGNOSE (flutter-libnx): Waechter um jede Heap-Allokation, siehe
 # embedder/src/platform/heap_guard_horizon.cpp. Sucht die Speicherbeschaedigung,
@@ -99,7 +107,10 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) $(WRAPS) -Wl,-u,__li
 # geaendertem Arbeitsverzeichnis erneut aufruft.
 SQLITE_LIB	:= $(dir $(abspath $(firstword $(MAKEFILE_LIST))))../../third_party/sqlite3/libsqlite3.a
 
-LIBS	:= $(ENGINE_LIB) $(SQLITE_LIB) -lnx
+# GPU-Rendering: Mesa (EGL + Desktop-GL ueber nouveau) aus den Portlibs.
+# Reihenfolge zaehlt: EGL braucht glapi, glapi braucht drm_nouveau, alles
+# braucht nx.
+LIBS	:= $(ENGINE_LIB) $(SQLITE_LIB) -lEGL -lglapi -ldrm_nouveau -lnx
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

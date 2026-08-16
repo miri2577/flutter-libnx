@@ -33,7 +33,27 @@ bool EnsureSocket() {
   if (g_socket_ready) {
     return true;
   }
-  if (R_SUCCEEDED(socketInitializeDefault())) {
+  // Nicht die Default-Konfiguration: Die ist fuer bescheidene Homebrew
+  // ausgelegt (kleine Puffer, 3 BSD-Sessions) und brach bei Referenz-App mit
+  // ENOBUFS (errno 105) auf allen Verbindungen zusammen - die App faehrt
+  // Dutzende parallele TLS-Verbindungen (DoH, WebDAV, Relay, Thumbnails).
+  // Speicher ist reichlich da (3-GB-Heap); grosszuegige Puffer und
+  // Sessions sind der richtige Tausch.
+  constexpr SocketInitConfig kConfig = {
+      .tcp_tx_buf_size = 128 * 1024,
+      .tcp_rx_buf_size = 128 * 1024,
+      .tcp_tx_buf_max_size = 512 * 1024,
+      .tcp_rx_buf_max_size = 512 * 1024,
+      .udp_tx_buf_size = 0x2400,
+      .udp_rx_buf_size = 0xA500,
+      .sb_efficiency = 8,
+      .num_bsd_sessions = 16,
+      .bsd_service_type = BsdServiceType_User,
+  };
+  if (R_SUCCEEDED(socketInitialize(&kConfig))) {
+    g_socket_ready = true;
+  } else if (R_SUCCEEDED(socketInitializeDefault())) {
+    // Rueckfall, falls die grosse Konfiguration abgelehnt wird.
     g_socket_ready = true;
   }
   return g_socket_ready;

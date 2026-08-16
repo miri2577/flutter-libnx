@@ -6,6 +6,71 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
+## 2026-08-16 – GPU-Meilenstein und der Referenz-App-Feldtest
+
+**Skia rendert über OpenGL auf der GPU: 31-37 fps statt 12-15.** Und der
+härteste Referenzfall läuft: Referenz-App (media_kit, inappwebview, Hive,
+Dutzende parallele TLS-Verbindungen) zeigt seine UI, Login funktioniert,
+WebDAV-Cloud-Sync baut auf.
+
+### GPU (Meilenstein GL)
+
+* Engine: `shell_enable_gl=true` + `skia_use_gl=true` (der eigene
+  Meilenstein-2-Patch hatte GL fuer Horizon festgenagelt - Notloesungen
+  ueberleben ihre Begruendung, Teil 2), Impeller aus
+  (`impeller_supports_rendering=false`; drei Patches kapseln die
+  Impeller-Reste im GL-Grundblock des Embedders).
+* Embedder: `egl_horizon.cpp` - EGL ueber Mesa/nouveau auf dem NWindow,
+  Desktop-GL Core 4.3, Stencil 8 (Pflicht fuer Skia), Vsync an. Skia holt
+  alle GL-Funktionen ueber den proc resolver (`eglGetProcAddress` -
+  Mesa kann auch Kernfunktionen); die Engine linkt kein GL, nur die NRO
+  (`-lEGL -lglapi -ldrm_nouveau`).
+* Laufzeit-Weiche mit Software-Rueckfall; `SwitchPlatform` legt im
+  GL-Modus keinen Framebuffer an (beide wollen dasselbe Fenster).
+
+### Die devoptab-Exklusivitaet, endgueltig: virtuelle Dateihandles
+
+Hive oeffnet jede Box doppelt (Lese- + Schreib-Handle) - der Dateidienst
+haelt Dateien exklusiv, das zweite open() scheitert mit EIO. Statt
+Einzelfallreparatur jetzt ein Mini-VFS in der Compat-Schicht: pro Pfad
+genau ein echter Deskriptor (refcounted, mit maximalem Zugriff geoeffnet,
+Rueckfall fuer romfs), jedes open() ein virtuelles Handle mit eigenem
+Offset; read/write/lseek/fstat/ftruncate/close/dup setzen um.
+fcntl-Sperren sind auf der Einprozess-Konsole trivial erfuellt (Dart
+RandomAccessFile.lock, von Hive benutzt).
+
+### Wurzelzertifikate: die naechste stille Weiche
+
+`CERTIFICATE_VERIFY_FAILED` bei der ersten echten TLS-Verbindung: Der
+Rueckfall auf die einkompilierten Zertifikate in `TrustBuiltinRoots`
+steht hinter `DART_HOST_OS_LINUX` - auf Horizon lief die Funktion leer
+durch. Patch erweitert den Guard. (Familienmitglied Nr. 5.)
+
+### ENOBUFS: die Default-Socketkonfiguration ist fuer Bescheidene
+
+Referenz-App faehrt Dutzende parallele Verbindungen; die libnx-Defaults
+(kleine Puffer, 3 BSD-Sessions) brachen mit errno 105 auf ALLEN
+Verbindungen zusammen. Eigene `SocketInitConfig`: 128/512-KB-TCP-Puffer,
+sb_efficiency 8, 16 Sessions. Speicher ist da.
+
+### App-seitige Anpassungen (Referenz-App selbst, dokumentiert im Referenz-App-Repo)
+
+Referenz-App verlangt libmpv hart beim Start - zwei Guards noetig
+(`MediaKit.ensureInitialized`, `windowManager` im isLinux-Zweig) plus
+IntroPage: Player-Konstruktor wirft ohne MediaKit-Init, die
+Build-Exception machte den Bildschirm weiss; jetzt wird das Intro
+uebersprungen. Das ist kein Bruch des "unveraendert"-Ziels: Eine App,
+die eine Videobibliothek als Startbedingung erzwingt, trifft eine
+Plattformannahme - der Rest laeuft unveraendert.
+
+**Offen:** Videowiedergabe (libmpv-Forschungsprojekt), `package_info`
+(kleiner Kanal), curl-Subprozess-Fallback der App scheitert ehrlich.
+Patch-Schoenheitsfehler: flutter/skia/BUILD.gn traegt derzeit zwei
+is_horizon-Bloecke (der spaetere gewinnt mit gl=true) - beim naechsten
+frischen Checkout aufraeumen.
+
+---
+
 ## 2026-08-15 – Frame-Baseline: Software-Rendering ist der Deckel
 
 Erste saubere Zahlen (pausenbereinigte Messung, CPU-Boost aktiv,
