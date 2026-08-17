@@ -24,7 +24,12 @@
 # dieselbe Klasse Fehler mit deren eigenen Schriften und Assets wieder
 # aufgetreten.
 param(
-  [string]$Project
+  [string]$Project,
+  # -Product setzt -Ddart.vm.product=true beim Kernel: kDebugMode wird
+  # falsch, Debug-Pfade fallen aus dem AOT-Build (schneller). NICHT fuer
+  # Apps mit media_kit auf Horizon: dessen NativeReferenceHolder-Pfad
+  # laeuft nur, weil kDebugMode im AOT wahr ist (Referenz-App braucht das).
+  [switch]$Product
 )
 
 $ErrorActionPreference = 'Stop'
@@ -138,13 +143,16 @@ if ($registrations.Count -gt 0) {
   $lines | Set-Content -Encoding utf8 $entry
 }
 
-Write-Host '==> Kernel erzeugen'
+Write-Host ('==> Kernel erzeugen' + $(if ($Product) { ' (product)' } else { '' }))
 $dill = "$generated\app.dill"
+$defines = @()
+if ($Product) { $defines += '-Ddart.vm.product=true' }
 & "$sdk\bin\dartaotruntime.exe" "$sdk\bin\snapshots\gen_kernel_aot.dart.snapshot" `
   --platform $platform `
   --target=flutter `
   --aot `
   --packages $packages `
+  @defines `
   -o $dill `
   $entry
 if ($LASTEXITCODE -ne 0) { throw 'gen_kernel fehlgeschlagen' }

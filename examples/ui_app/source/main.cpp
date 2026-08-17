@@ -56,6 +56,8 @@ extern "C" void flutter_libnx_egl_shutdown(void);
 extern "C" bool flutter_libnx_egl_make_current(void);
 extern "C" bool flutter_libnx_egl_clear_current(void);
 extern "C" bool flutter_libnx_egl_present(void);
+extern "C" void flutter_libnx_cursor_state(int x, int y, bool visible,
+                                           bool pressed);
 extern "C" void* flutter_libnx_egl_resolve(const char* name);
 // Aus media_kit_video_horizon.cpp: der Kanal com.alexmercerind/
 // media_kit_video und die mpv-Render-Bruecke in externe Flutter-Texturen.
@@ -276,14 +278,128 @@ void SendTouchEvents(FLUTTER_API_SYMBOL(FlutterEngine) engine,
   }
 }
 
+// Virtueller Cursor: Controller-Bedienung fuer reine Touch-Apps.
+//
+// Das Fokus-Modell unten (Pfeiltasten/Enter) traegt nur Apps, deren Widgets
+// fokussierbar sind. Fremde Flutter-Projekte bedienen sich fast immer per
+// GestureDetector - dort kommt keine Taste je an. Deshalb zusaetzlich ein
+// Zeiger: Der RECHTE Stick bewegt ihn (der linke bleibt Fokus-Navigation),
+// A oder ZR klickt als Touch-Ereignis an der Zeigerposition; Stick halten
+// plus gedrueckte Taste ergibt einen Drag (Swipes, z. B. 2048). Solange der
+// Zeiger aktiv ist, wird A NICHT als Enter gesendet (sonst doppelte
+// Aktivierung); nach 5 s ohne Eingabe blendet er aus und A ist wieder Enter.
+// Gezeichnet wird der Zeiger im Raster-Thread (egl_horizon.cpp).
+struct VirtualCursorState {
+  double x = flutter_libnx::kDefaultWidth / 2.0;
+  double y = flutter_libnx::kDefaultHeight / 2.0;
+  bool active = false;
+  bool pressed = false;
+  uint64_t last_input_ns = 0;
+  uint64_t last_frame_ns = 0;
+  double sent_x = -1.0;
+  double sent_y = -1.0;
+};
+
+VirtualCursorState g_vcursor;
+
+// Liefert die Maske der Tasten, die SendKeyEvents ueberspringen soll.
+u64 UpdateVirtualCursor(FLUTTER_API_SYMBOL(FlutterEngine) engine,
+                        const flutter_libnx::SwitchPlatform& platform) {
+  const uint64_t now = FlutterEngineGetCurrentTime();
+  const double dt = g_vcursor.last_frame_ns == 0
+      ? 0.0
+      : static_cast<double>(now - g_vcursor.last_frame_ns) / 1e9;
+  g_vcursor.last_frame_ns = now;
+
+  // Rechter Stick: quadratische Kennlinie (Feinsteuerung nahe der Mitte,
+  // zuegig am Anschlag), Totzone 25 %.
+  const HidAnalogStickState stick = padGetStickPos(&platform.pad(), 1);
+  auto axis = [](double raw) {
+    const double v = raw / 32767.0;
+    const double a = v < 0 ? -v : v;
+    if (a < 0.25) {
+      return 0.0;
+    }
+    const double n = (a - 0.25) / 0.75;
+    return (v < 0 ? -1.0 : 1.0) * n * n;
+  };
+  const double vx = axis(stick.x);
+  const double vy = axis(stick.y);
+  if (vx != 0.0 || vy != 0.0) {
+    const double kSpeed = 1400.0;  // px/s am Anschlag
+    g_vcursor.x += vx * kSpeed * dt;
+    g_vcursor.y -= vy * kSpeed * dt;  // Stick +y ist oben, Bildschirm-y unten
+    if (g_vcursor.x < 0) g_vcursor.x = 0;
+    if (g_vcursor.y < 0) g_vcursor.y = 0;
+    if (g_vcursor.x > flutter_libnx::kDefaultWidth - 1)
+      g_vcursor.x = flutter_libnx::kDefaultWidth - 1;
+    if (g_vcursor.y > flutter_libnx::kDefaultHeight - 1)
+      g_vcursor.y = flutter_libnx::kDefaultHeight - 1;
+    g_vcursor.active = true;
+    g_vcursor.last_input_ns = now;
+  }
+
+  const u64 down = padGetButtonsDown(&platform.pad());
+  const u64 up = padGetButtonsUp(&platform.pad());
+  const u64 kClickButtons = HidNpadButton_A | HidNpadButton_ZR;
+
+  // ZR weckt den Zeiger auch ohne Stick-Bewegung.
+  if ((down & HidNpadButton_ZR) != 0) {
+    g_vcursor.active = true;
+    g_vcursor.last_input_ns = now;
+  }
+
+  bool send_down = false;
+  bool send_up = false;
+  if (g_vcursor.active && !g_vcursor.pressed && (down & kClickButtons) != 0) {
+    g_vcursor.pressed = true;
+    send_down = true;
+    g_vcursor.last_input_ns = now;
+  } else if (g_vcursor.pressed && (up & kClickButtons) != 0) {
+    g_vcursor.pressed = false;
+    send_up = true;
+    g_vcursor.last_input_ns = now;
+  }
+
+  if (g_vcursor.active && !g_vcursor.pressed &&
+      now - g_vcursor.last_input_ns > 5'000'000'000ULL) {
+    g_vcursor.active = false;
+  }
+
+  if (engine != nullptr && (send_down || send_up ||
+      (g_vcursor.pressed &&
+       (g_vcursor.x != g_vcursor.sent_x || g_vcursor.y != g_vcursor.sent_y)))) {
+    FlutterPointerEvent e = {};
+    e.struct_size = sizeof(FlutterPointerEvent);
+    e.phase = send_down ? kDown : (send_up ? kUp : kMove);
+    e.timestamp = static_cast<size_t>(now / 1000);
+    e.x = g_vcursor.x;
+    e.y = g_vcursor.y;
+    e.device = 777;  // eigener Slot neben den echten Touch-IDs
+    e.device_kind = kFlutterPointerDeviceKindTouch;
+    e.buttons = send_up ? 0 : kFlutterPointerButtonMousePrimary;
+    FlutterEngineSendPointerEvent(engine, &e, 1);
+    g_vcursor.sent_x = g_vcursor.x;
+    g_vcursor.sent_y = g_vcursor.y;
+  }
+
+  flutter_libnx_cursor_state(static_cast<int>(g_vcursor.x),
+                             static_cast<int>(g_vcursor.y),
+                             g_vcursor.active, g_vcursor.pressed);
+
+  // Aktiver Zeiger beansprucht A (Klick statt Enter); waehrend eines Drags
+  // auch dann, wenn er gerade ausgeblendet wuerde.
+  return (g_vcursor.active || g_vcursor.pressed) ? HidNpadButton_A : 0;
+}
+
 // Controller-Eingabe als Tastaturereignisse.
 //
 // Warum Tasten und kein Mauszeiger: Die Engine meldet sich beim Framework als
 // `TargetPlatform.linux` (siehe patch_dart_platform_name). Damit gilt das
 // Desktop-Modell – Fokus wandert mit den Pfeiltasten, Aktivieren mit Enter,
 // Zurück mit Escape. Genau das leistet Flutters Fokussystem von sich aus, ohne
-// dass eine Anwendung etwas dafür tun muss; ein virtueller Zeiger wäre
-// zusätzliche Mechanik für dasselbe Ziel.
+// dass eine Anwendung etwas dafür tun muss; fuer reine Touch-Apps ergaenzt
+// der virtuelle Cursor oben das Zeiger-Modell.
 //
 // Die Codes sind nachgeschlagen, nicht geraten: `physical` ist der USB-HID-Wert
 // aus `PhysicalKeyboardKey`, `logical` der Wert aus `LogicalKeyboardKey`
@@ -321,7 +437,8 @@ void KeyEventCallback(bool handled, void* user_data) {
 }
 
 void SendKeyEvents(FLUTTER_API_SYMBOL(FlutterEngine) engine,
-                   const flutter_libnx::SwitchPlatform& platform) {
+                   const flutter_libnx::SwitchPlatform& platform,
+                   u64 suppress_mask) {
   if (engine == nullptr) {
     return;
   }
@@ -340,6 +457,12 @@ void SendKeyEvents(FLUTTER_API_SYMBOL(FlutterEngine) engine,
       static_cast<uint64_t>(FlutterEngineGetCurrentTime() / 1000);
 
   for (const ButtonKeyMap& map : kButtonKeys) {
+    // Vom virtuellen Cursor beanspruchte Tasten (A als Klick) nicht
+    // zusaetzlich als Tastatur senden - sonst aktiviert ein Klick auch
+    // noch das fokussierte Widget.
+    if ((map.button & suppress_mask) != 0) {
+      continue;
+    }
     for (int phase = 0; phase < 2; phase++) {
       const bool is_down = (phase == 0);
       if (((is_down ? down : up) & map.button) == 0) {
@@ -796,6 +919,44 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Lebenszyklus 'resumed' = %d (%s)", static_cast<int>(life),
              ResultName(life));
 
+    // Konsolensprache an die Engine melden. Ohne UpdateLocales sieht das
+    // Framework eine LEERE Locale-Liste - Apps, die im
+    // localeListResolutionCallback `locales.first` lesen (voellig ueblich,
+    // Fund: Flutter Gallery), sterben mit StateError im allerersten Build:
+    // weisser Bildschirm, App reagiert nicht.
+    {
+      char bcp47[16] = {};
+      u64 packed = 0;
+      if (R_SUCCEEDED(setInitialize())) {
+        if (R_SUCCEEDED(setGetSystemLanguage(&packed))) {
+          memcpy(bcp47, &packed, sizeof(packed));
+        }
+        setExit();
+      }
+      if (bcp47[0] == '\0') {
+        strcpy(bcp47, "en-US");  // Rueckfall, wenn set: nicht antwortet
+      }
+      // Formen wie "de", "en-US", "zh-Hans": erster Teil Sprache, zweiter
+      // nur dann Land, wenn er zweibuchstabig ist (sonst Schrift-Tag).
+      char country[8] = {};
+      char* dash = strchr(bcp47, '-');
+      if (dash != nullptr) {
+        *dash = '\0';
+        if (strlen(dash + 1) == 2) {
+          strcpy(country, dash + 1);
+        }
+      }
+      FlutterLocale locale = {};
+      locale.struct_size = sizeof(FlutterLocale);
+      locale.language_code = bcp47;
+      locale.country_code = country[0] != '\0' ? country : nullptr;
+      const FlutterLocale* locales[] = {&locale};
+      const FlutterEngineResult loc =
+          FlutterEngineUpdateLocales(engine, locales, 1);
+      LOG_INFO("Locale %s%s%s an Engine gemeldet = %d (%s)", bcp47,
+               country[0] != '\0' ? "-" : "", country,
+               static_cast<int>(loc), ResultName(loc));
+    }
   }
 
   // Das View-Fokus-Ereignis wird bewusst NICHT hier gesendet, sondern erst
@@ -825,7 +986,8 @@ int main(int argc, char* argv[]) {
       break;
     }
     SendTouchEvents(engine, platform);
-    SendKeyEvents(engine, platform);
+    const u64 cursor_claimed = UpdateVirtualCursor(engine, platform);
+    SendKeyEvents(engine, platform, cursor_claimed);
 
     // Aufgaben der Engine abarbeiten. Ohne das wird nichts gezeichnet und
     // keine Rückmeldung zugestellt – die Engine hat keinen eigenen Thread

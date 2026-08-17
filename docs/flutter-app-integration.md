@@ -132,7 +132,37 @@ Weiteres zu media_kit auf Horizon:
   Proxy zeigen lassen). **Ein** Upstream-Client mit Keep-Alive, sonst frisst
   jeder Seek einen neuen TLS-Aufbau aus dem knappen Socket-Pool.
 
-## 6. Zusammengefasst: die Kopiervorlagen
+## 6. Was der Embedder inzwischen GENERISCH erledigt (nichts zu tun)
+
+Diese Punkte brauchten frueher App-Arbeit und sind jetzt fuer jede App
+geloest — bestaetigt mit zwei unveraenderten Fremdprojekten
+(Piyushhhhh/flutter-games, flutter/gallery) auf Hardware:
+
+- **Virtueller Cursor** (main.cpp + egl_horizon.cpp): Rechter Stick bewegt
+  einen gezeichneten Zeiger, A/ZR klickt als Touch-Ereignis, Taste halten +
+  Stick = Drag/Swipe. Damit sind reine GestureDetector-Apps ohne
+  fokussierbare Widgets voll bedienbar. Solange der Zeiger aktiv ist,
+  sendet A kein Enter (keine Doppel-Aktivierung); nach 5 s Leerlauf blendet
+  er aus, dann gilt wieder das Fokus-Modell (linker Stick/DPAD/A/B).
+- **System-Locale** (main.cpp): `setGetSystemLanguage` →
+  `FlutterEngineUpdateLocales`. Ohne das bekam das Framework eine LEERE
+  Locale-Liste — Apps, die im `localeListResolutionCallback`
+  `locales.first` lesen (Flutter Gallery), starben mit StateError im
+  ersten Build: weisser Bildschirm.
+- **`-Product`-Schalter** (build-dart-app.ps1): setzt
+  `-Ddart.vm.product=true` beim Kernel — kDebugMode wird falsch,
+  Debug-Pfade fallen aus dem AOT. Standard fuer fremde Apps. NICHT fuer
+  Apps mit media_kit auf Horizon (dessen NativeReferenceHolder-Pfad lebt
+  vom wahren kDebugMode — Referenz-App!).
+
+Typische App-seitige Restarbeit bei ARCHIVIERTEN Projekten ist reine
+Flutter-Versions-Migration (waere auf jedem Desktop genauso faellig):
+CardTheme→CardThemeData, BottomAppBarTheme→BottomAppBarThemeData,
+`package:flutter_gen`-l10n auf `output-dir` umstellen, veraltete
+transitive Pakete per `dependency_overrides` anheben (win32,
+google_fonts).
+
+## 7. Zusammengefasst: die Kopiervorlagen
 
 | Datei | Zweck |
 |---|---|
