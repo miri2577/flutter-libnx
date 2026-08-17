@@ -4,8 +4,8 @@ Stand: 2026-08-09.
 
 Ziel ist ein **allgemeiner** Embedder, mit dem bestehende Flutter-Apps möglichst
 unverändert laufen – nicht eine auf eine App zugeschnittene Lösung. Als Referenz dient
-Referenz-App (`referenz_app`, `Desktop\Referenz-App-Arbeitsstand`, 148 Dart-Dateien), weil es zufällig
-der härteste Fall ist: eine Streaming-App mit Videowiedergabe und WebView.
+eine grosse private Referenz-App (148 Dart-Dateien), weil sie zufällig
+der härteste Fall ist: Netzwerk, Bilder, Videowiedergabe und WebView in einer App.
 
 Wichtig für die Erwartungshaltung: An der Reihenfolge der Meilensteine ändert das nichts.
 Vor Meilenstein 9 ist keine dieser Fragen relevant – ohne laufende Engine und ersten Frame
@@ -51,7 +51,7 @@ Für A-bis-C-Apps gilt: Stubs sind erlaubt, aber sie müssen einen klaren Fehler
 
 ### D – Eigenständige Forschungsprojekte
 
-Zwei Abhängigkeiten von Referenz-App sind keine Portierungsaufgabe, sondern jeweils ein
+Zwei Abhängigkeiten der Referenz-App sind keine Portierungsaufgabe, sondern jeweils ein
 eigenes Projekt:
 
 **`media_kit` + `media_kit_video`** – setzt libmpv voraus, also faktisch FFmpeg plus
@@ -88,7 +88,7 @@ Was damit **geht**:
 - `url_launcher` ist damit **doch** implementierbar – die frühere Einordnung „kein Browser
   vorhanden" in Gruppe B stimmt so nicht.
 
-Für Referenz-App bleibt die Captcha-Auflösung trotzdem schwierig: Ein
+Für Apps mit Captcha-Flows bleibt die Auflösung trotzdem schwierig: Ein
 Cloudflare-Clearance-Cookie ist HttpOnly und wäre selbst mit JavaScript auf einer eigenen
 Zwischenseite nicht auslesbar, um es über die Callback-URL zurückzureichen. Ob der bei
 FlyFile benötigte Wert ein Cookie oder ein per API zurückgegebener Token ist, müsste man
@@ -148,9 +148,9 @@ etwas, das später niemand so verwendet.
 
 ## Was daraus folgt
 
-1. Der Embedder bleibt allgemein. Nichts an Referenz-App rechtfertigt Sonderwege in der Engine.
+1. Der Embedder bleibt allgemein. Nichts an der Referenz-App rechtfertigt Sonderwege in der Engine.
 2. Die Plugin-Arbeit beginnt bei Gruppe B, weil sie App-übergreifend wirkt.
-3. Für Referenz-App im Besonderen gilt: UI, Navigation, Scraping, Datenhaltung und Netzwerk
+3. Für die Referenz-App im Besonderen gilt: UI, Navigation, Scraping, Datenhaltung und Netzwerk
    sind ein realistisches Ziel. Videowiedergabe und WebView sind es vorerst nicht, und das
    sollte man wissen, bevor man Zeit investiert – nicht hinterher.
 4. Eine App ohne Video und ohne WebView ist der bessere erste echte Portierungskandidat.

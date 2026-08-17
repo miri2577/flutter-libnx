@@ -3055,7 +3055,7 @@ def patch_dart_ffi_callback_metadata(src: str) -> None:
 def patch_dart_security_context(src: str) -> None:
     path = os.path.join(src, "flutter", "third_party", "dart", "runtime",
                         "bin", "security_context_linux.cc")
-    # Fund vom 2026-08-15 (Referenz-App, erste echte TLS-Verbindung):
+    # Fund vom 2026-08-15 (erste echte TLS-Verbindung einer App):
     # CERTIFICATE_VERIFY_FAILED, weil der Rueckfall auf die einkompilierten
     # Wurzelzertifikate hinter DART_HOST_OS_LINUX steht - auf Horizon lief
     # TrustBuiltinRoots komplett leer durch (die /etc/ssl-Pfade gibt es auf

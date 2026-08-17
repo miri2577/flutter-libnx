@@ -35,7 +35,7 @@ bool EnsureSocket() {
     return true;
   }
   // Nicht die Default-Konfiguration: Die ist fuer bescheidene Homebrew
-  // ausgelegt (kleine Puffer, 3 BSD-Sessions) und brach bei Referenz-App mit
+  // ausgelegt (kleine Puffer, 3 BSD-Sessions) und brach bei der Referenz-App mit
   // ENOBUFS (errno 105) auf allen Verbindungen zusammen - die App faehrt
   // Dutzende parallele TLS-Verbindungen (DoH, WebDAV, Relay, Thumbnails).
   // Speicher ist reichlich da (3-GB-Heap); grosszuegige Puffer und
@@ -45,7 +45,7 @@ bool EnsureSocket() {
   // Das Session-Limit des Dienstes, nicht der Speicher. Deshalb NUR die
   // Effizienz (Puffer-Pool) angehoben, Sessions bleiben bei 16. Der Bedarf
   // ist real: Mit Pool 8 war nach dem ersten Cloud-Film Schluss - der
-  // Stream-Proxy verdoppelt die Sockets (mpv->Proxy->WebDAV-Cloud), und FFmpeg
+  // Stream-Proxy verdoppelt die Sockets (mpv->Proxy->Cloud), und FFmpeg
   // bekam nicht mal mehr eine Loopback-Verbindung (ENOBUFS).
   constexpr SocketInitConfig kConfig = {
       .tcp_tx_buf_size = 128 * 1024,

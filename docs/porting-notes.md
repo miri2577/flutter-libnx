@@ -6,18 +6,18 @@ Format je Eintrag: Befund · Beleg (Datei:Zeile oder Kommando) · Konsequenz.
 
 ---
 
-## 2026-08-16 (IV) – Echte App auf der Switch: Video-Seite Ende-zu-Ende, und der Player-Teardown-Absturz
+## 2026-08-16 (IV) – Echte App auf der Switch: Streaming Ende-zu-Ende, und der Player-Teardown-Absturz
 
-**Auf Hardware bestaetigt:** Referenz-App spielt einen HLS-Stream
+**Auf Hardware bestaetigt:** Die Referenz-App spielt einen HLS-Stream
 komplett — Liste → Detail → Hoster-Resolver → HLS → Player mit Bild und
 Ton, **ohne jeden Server**. Cover werden angezeigt. Der app-seitige
 Integrationsweg ist in `docs/flutter-app-integration.md` gesammelt (mit
 Kopiervorlagen in `dart_helpers/`), weil er fuer jede Flutter-App gilt,
-nicht nur fuer Referenz-App. Das Wichtigste hier:
+nicht nur fuer die Referenz-App. Das Wichtigste hier:
 
 ### Netzwerk ohne Relay/curl/WebView
 
-Darts BoringSSL-TLS wird von Cloudflare-geschuetzten Seiten und allen getesteten
+Darts BoringSSL-TLS wird von Cloudflare-geschuetzten und allen getesteten
 Hostern AKZEPTIERT (HTTP 200, keine Challenge) — der lange verfolgte
 Relay-/Coolify-Weg war unnoetig. Es fehlte nur der Verbindungsweg:
 `HttpClient.connectionFactory` gibt fuer https einen ungesicherten Socket
@@ -60,14 +60,14 @@ den Start beschraenkt.
 * Max. ~4 gleichzeitige Sockets (16 BSD-Sessions) — Semaphore im
   HTTP-Helfer; Dutzende parallele Cover sprengten sonst den Pool.
 * curl-Fallbacks komplett aus (keine Kindprozesse); WebView-Resolver
-  scheitern (kein InAppWebView) — reine Regex/JS-Resolver (reine Regex-Resolver)
-  laufen, WebView-abhaengige (WebView-abhaengige) nicht.
+  scheitern (kein InAppWebView) — reine Regex/JS-Resolver
+  laufen, WebView-abhaengige nicht.
 
 ---
 
 ## 2026-08-16 (III) – Die Video-Bruecke: media_kit liefert Bild und Ton
 
-**Auf Hardware bestaetigt: Das Referenz-App-Intro laeuft mit Bild (richtige
+**Auf Hardware bestaetigt: Das Intro der Referenz-App laeuft mit Bild (richtige
 Lage) und Ton**, ueber mehrere Player-Zyklen stabil, sauberer Abbau. Der
 Weg dorthin waren sechs Befunde, jeder verdeckte den naechsten - und drei
 davon sind Familienmitglieder bekannter Muster.
@@ -212,7 +212,7 @@ Seiten-Geometrie (kPageSize 4 KB beidseitig). Preis des Modells:
 Callback-Anzahl auf eine Stub-Seite begrenzt; media_kit braucht eine
 Handvoll.
 
-**Stand Referenz-App:** App voll lauffaehig, WebDAV-Cloud-Sync 6 Profile; Intro
+**Stand Referenz-App:** voll lauffaehig, Cloud-Sync 6 Profile; Intro
 bleibt schwarz-stumm (Player entsteht jetzt echt, aber ohne
 Render-Ziel/Audio-Pfad kein completed-Ereignis) - Tippen ueberspringt.
 **Naechste Etappe: die Video-Bruecke** - mpv_render_gl in GL-Texturen,
@@ -225,9 +225,9 @@ SDL-Ausgabe).
 ## 2026-08-16 – GPU-Meilenstein und der Referenz-App-Feldtest
 
 **Skia rendert über OpenGL auf der GPU: 31-37 fps statt 12-15.** Und der
-härteste Referenzfall läuft: Referenz-App (media_kit, inappwebview, Hive,
+härteste Referenzfall läuft: die Referenz-App (media_kit, inappwebview, Hive,
 Dutzende parallele TLS-Verbindungen) zeigt seine UI, Login funktioniert,
-WebDAV-Cloud-Sync baut auf.
+Cloud-Sync baut auf.
 
 ### GPU (Meilenstein GL)
 
@@ -264,14 +264,14 @@ durch. Patch erweitert den Guard. (Familienmitglied Nr. 5.)
 
 ### ENOBUFS: die Default-Socketkonfiguration ist fuer Bescheidene
 
-Referenz-App faehrt Dutzende parallele Verbindungen; die libnx-Defaults
+Die Referenz-App faehrt Dutzende parallele Verbindungen; die libnx-Defaults
 (kleine Puffer, 3 BSD-Sessions) brachen mit errno 105 auf ALLEN
 Verbindungen zusammen. Eigene `SocketInitConfig`: 128/512-KB-TCP-Puffer,
 sb_efficiency 8, 16 Sessions. Speicher ist da.
 
-### App-seitige Anpassungen (Referenz-App selbst, dokumentiert im Referenz-App-Repo)
+### App-seitige Anpassungen (in der Referenz-App, dokumentiert in deren Repo)
 
-Referenz-App verlangt libmpv hart beim Start - zwei Guards noetig
+Die Referenz-App verlangt libmpv hart beim Start - zwei Guards noetig
 (`MediaKit.ensureInitialized`, `windowManager` im isLinux-Zweig) plus
 IntroPage: Player-Konstruktor wirft ohne MediaKit-Init, die
 Build-Exception machte den Bildschirm weiss; jetzt wird das Intro
@@ -1162,7 +1162,7 @@ Belegt ist das nicht, es passt nur auffällig gut. Der Absturzbericht steht
 bereit, falls es im Anwendungsmodus wiederkommt.
 
 **Praktische Folge für alles Weitere:** Getestet wird im Anwendungsmodus
-(hbmenu über ein Spiel mit gehaltener R-Taste starten). Für Referenz-App als
+(hbmenu über ein Spiel mit gehaltener R-Taste starten). Für die Referenz-App als
 Zielfall ist das ohnehin die einzig sinnvolle Betriebsart – Videopuffer
 brauchen mehr als 137 MB.
 
@@ -1692,7 +1692,7 @@ darüber setzt es aus demselben Grund ausdrücklich. Ohne Typeface gäbe es kein
 `root_certificates_unsupported.cc` und ein Ziel `fallback_root_certificates`, gesteuert
 über `dart_use_fallback_root_certificates`. Auf Horizon ist das keine Notlösung, sondern
 der einzige Weg: Es gibt keinen Systemzertifikatspeicher und kein `/etc/ssl`. Ohne das
-Flag wäre jede HTTPS-Verbindung unmöglich – und damit Referenz-App.
+Flag wäre jede HTTPS-Verbindung unmöglich – und damit die Referenz-App.
 
 **Befund 3 – abseil.** `low_level_alloc.o` wird gebaut, enthält aber **null Symbole**.
 `low_level_alloc.h:39-41` setzt `ABSL_LOW_LEVEL_ALLOC_MISSING`, sobald `ABSL_HAVE_MMAP`

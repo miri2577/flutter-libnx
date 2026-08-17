@@ -8,15 +8,15 @@ import 'package:flutter/foundation.dart';
 /// Eigener HTTP-GET für die Nintendo Switch (Horizon).
 ///
 /// Warum nötig: Horizon hat keine Kindprozesse (kein curl-Ausweg des
-/// Desktops), und der System-DNS lügt bei gesperrten Domains (Provider).
-/// Darts BoringSSL-TLS wird von Cloudflare-geschuetzten Seiten und den Hostern aber
+/// Desktops), und der System-DNS lügt bei netzseitig gesperrten Domains.
+/// Darts BoringSSL-TLS wird auch von Cloudflare-geschuetzten Seiten
 /// AKZEPTIERT (auf Hardware/PC geprüft, HTTP 200) — es fehlte nur ein Weg,
 /// zur DoH-IP zu verbinden UND die richtige SNI (Hostname) zu setzen.
 /// Darts `HttpClient.connectionFactory` kann das nicht (einfacher Socket →
 /// kein TLS, `ConnectionTask` ist `final`). Deshalb hier ein schlanker
 /// Roh-GET über `SecureSocket.secure(host: …)`: verbindet zur IP, TLS mit
 /// Hostname-SNI, folgt Redirects, entpackt gzip/chunked, beendet das Lesen
-/// an der chunked-Endmarke bzw. Content-Length (video-seite sendet kein FIN).
+/// an der chunked-Endmarke bzw. Content-Length (manche Server senden kein FIN).
 ///
 /// Grenzen: nur GET, kein Keep-Alive, keine Cookies. Der Video-Stream selbst
 /// läuft über den LocalStreamProxy.
@@ -30,7 +30,7 @@ class HorizonHttp {
 
   // Parallelitaets-Bremse: Jede Anfrage oeffnet einen eigenen TLS-Socket.
   // Die Konsole hat nur 16 BSD-Sessions — laufen beim Zurueckblaettern
-  // Dutzende Cover gleichzeitig (plus WebDAV-Cloud-Scan), erschoepft das den
+  // Dutzende Cover gleichzeitig (plus Hintergrund-Sync), erschoepft das den
   // Session-Pool und der Prozess stirbt hart am Kernel (2011-0102, "out of
   // sessions"), ohne dass der Crash-Handler greift. Max. 6 gleichzeitig,
   // der Rest wartet in der Schlange.

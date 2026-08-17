@@ -321,10 +321,9 @@ Logzeile auf der SD-Karte.
       (hängt mutmaßlich am Secure-Storage-Stub) – beobachten.
 - [ ] sqlite3-Rauchprobe ist stillgelegt (Aufruf auskommentiert in
       `main.cpp`), bleibt für künftige Datei-I/O-Fehlersuchen reaktivierbar.
-- [ ] Referenz-Brocken bleibt Referenz-App/Referenz-App (dem privaten App-Repo;
-      maßgeblicher Stand: `Desktop\Referenz-App-Arbeitsstand`) – nach Plan erst UI/
-      Netzwerk, Video und WebView bleiben Forschungsprojekte
-      (`docs/target-apps.md`).
+- [ ] Referenz-Brocken bleibt eine grosse private App (eigenes Repo) –
+      nach Plan erst UI/Netzwerk, Video und WebView bleiben
+      Forschungsprojekte (`docs/target-apps.md`).
 
 ## Meilenstein 5 – GPU-Rendering und der Referenz-App-Feldtest
 
@@ -342,12 +341,12 @@ Logzeile auf der SD-Karte.
       `DART_HOST_OS_LINUX` liegen; Patch erweitert den Guard. TLS/DoH
       funktionieren seitdem.
 - [x] **Socket-Konfiguration für echte Last** – libnx-Defaults (3
-      Sessions, kleine Puffer) brachen unter Referenz-App' Paralellität mit
+      Sessions, kleine Puffer) brachen unter der Parallelität der Referenz-App mit
       ENOBUFS zusammen; jetzt 16 Sessions, 128/512-KB-Puffer.
-- [x] **Referenz-App läuft auf der Konsole:** UI auf der GPU, Lokalmodus,
-      Login, **WebDAV-Cloud-Anmeldung erfolgreich und funktional**. Drei
+- [x] **Die Referenz-App läuft auf der Konsole:** UI auf der GPU, Lokalmodus,
+      Login, **Cloud-Anmeldung (WebDAV) erfolgreich und funktional**. Drei
       dokumentierte App-Guards (MediaKit/windowManager/IntroPage) im
-      Referenz-App-Repo. Video bleibt Forschungsprojekt.
+      App-Repo. Video bleibt Forschungsprojekt.
 - [x] **Die Video-Brücke: media_kit liefert Bild und Ton** (2026-08-16,
       auf Hardware über viele Zyklen bestätigt): Kanal
       `com.alexmercerind/media_kit_video` im Embedder
@@ -363,14 +362,14 @@ Logzeile auf der SD-Karte.
 - [x] **Log-Rotation** – `ui_app.log` wird zu `.alt` rotiert statt
       ueberschrieben; nach einem harten Konsolen-Absturz ist die Datei
       die einzige Quelle des Berichts.
-- [x] **Referenz-App-Feldtest Video**: Intro und Cloud-Filme (WebDAV-Cloud, ueber
+- [x] **Referenz-App-Feldtest Video**: Intro und Cloud-Filme (WebDAV, ueber
       app-seitigen TLS-Proxy) laufen mit Bild und Ton. App-seitige
-      Switch-Anpassungen leben im eigenen Repo **Referenz-App-Switch-Repo**
+      Switch-Anpassungen leben im privaten App-Repo
       (lokaler TLS-Proxy + HLS-Umschreibung, Resolver-DoH,
       Relay-Route) – FFmpeg des Portlibs hat kein TLS,
       Horizon keine Kindprozesse (kein curl-Fallback).
-- [x] **Echte App Ende-zu-Ende auf Hardware (2026-08-16):** Referenz-App spielt
-      einen HLS-Stream komplett — Liste → Detail →
+- [x] **Echte App Ende-zu-Ende auf Hardware (2026-08-16):** Die Referenz-App spielt
+      einen HLS-Stream aus dem Netz komplett — Liste → Detail →
       Hoster-Resolver → HLS → Player mit Bild und Ton, **ohne Server**.
       Cover werden angezeigt. Kein Relay/curl/WebView nötig: Darts TLS wird
       direkt akzeptiert, eigener GET über DoH-IP + SNI. App-seitiger
@@ -381,8 +380,8 @@ Logzeile auf der SD-Karte.
       (Horizon-Stack-Erbschaft, intra-session). Fix: persistente
       Player-Instanz, beim Verlassen nur `stop()`. Details in
       porting-notes (IV).
-- [ ] WebView-abhängige Hoster (WebView-abhaengige) — regex/JS
-      ohne WebView nachbauen, falls gewünscht (Regex-Resolver laufen bereits).
+- [ ] WebView-abhängige Video-Quellen — regex/JS
+      ohne WebView nachbauen, falls gewünscht (reine Regex-Resolver laufen bereits).
 - [ ] Ein harter Konsolen-Absturz beim Video-Start (vor der
       Ein-Kontext-Architektur) blieb unerklaert – Log brach in
       Binaermuell ab, kein Handler lief. Beobachten.

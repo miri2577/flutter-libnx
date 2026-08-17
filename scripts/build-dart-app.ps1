@@ -28,7 +28,7 @@ param(
   # -Product setzt -Ddart.vm.product=true beim Kernel: kDebugMode wird
   # falsch, Debug-Pfade fallen aus dem AOT-Build (schneller). NICHT fuer
   # Apps mit media_kit auf Horizon: dessen NativeReferenceHolder-Pfad
-  # laeuft nur, weil kDebugMode im AOT wahr ist (Referenz-App braucht das).
+  # laeuft nur, weil kDebugMode im AOT wahr ist - media_kit-Apps brauchen das.
   [switch]$Product
 )
 

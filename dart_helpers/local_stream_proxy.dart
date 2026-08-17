@@ -7,14 +7,14 @@ import 'package:flutter/foundation.dart';
 ///
 /// Das statisch gelinkte FFmpeg der Konsole hat kein TLS — mpv meldet für
 /// jede https-URL "No protocol handler found" und der Player bleibt stumm.
-/// Darts eigener HTTP-Stack kann TLS sehr wohl (der gesamte WebDAV-Cloud-Sync
+/// Darts eigener HTTP-Stack kann TLS sehr wohl (ein kompletter WebDAV-Sync
 /// läuft darüber). Also zieht dieser Proxy den https-Stream selbst und
 /// reicht ihn mpv als `http://127.0.0.1:<port>/<token>` weiter — plain
 /// http kann das Konsolen-FFmpeg.
 ///
 /// Range-Anfragen (Spulen!) werden 1:1 durchgereicht, die Antwort-Header
 /// (Content-Length, Content-Range, Accept-Ranges) ebenso. Auth-Header
-/// (z. B. WebDAV-Cloud Basic) wandern in den Proxy und tauchen in der
+/// (z. B. WebDAV Basic-Auth) wandern in den Proxy und tauchen in der
 /// mpv-sichtbaren URL nicht mehr auf.
 ///
 /// HLS: m3u8-Playlisten werden umgeschrieben — jede https-URI (Segmente,

@@ -1,8 +1,9 @@
 # Flutter-Apps auf der Switch: Integrationsleitfaden
 
 Wie man eine **echte** Flutter-App (Netzwerk, Bilder, Video) auf Horizon
-lauffähig macht — die app-seitigen Muster, die sich am Referenzbrocken
-Referenz-App/Referenz-App herausgeschält haben. Der Embedder (dieses Repo) stellt
+lauffähig macht — die app-seitigen Muster, die sich an einer grossen
+Referenz-App (Netzwerk-, Bild- und Video-lastige UI) herausgeschält haben.
+Der Embedder (dieses Repo) stellt
 Engine, GL, Dateisystem und Kanäle; dieser Leitfaden sammelt, was auf der
 **Dart-Seite** jeder App nötig ist. Kopiervorlagen liegen in `dart_helpers/`.
 
@@ -88,7 +89,7 @@ Parallelitäts-Bremse (Semaphore, Standard 4). Lässt man App-eigene Clients
 mit System-DNS — sie kommen nicht an gesperrte/Custom-Hosts. Für Bilder
 braucht es ein eigenes Widget, das die Bytes über `HorizonHttp.getBytes`
 holt und per `Image.memory` zeigt (In-Memory-Cache fürs Scrollen). Muster
-im Referenz-App-`PlatformImage`; Kernpunkte:
+im `PlatformImage` der Referenz-App; Kernpunkte:
 
 - **`cacheWidth` setzen!** Volle Poster-Auflösung erzeugt große GPU-Texturen;
   ~120 davon erschöpfen den Tegra über nouveau → **harter Fault ohne
@@ -153,7 +154,7 @@ geloest — bestaetigt mit zwei unveraenderten Fremdprojekten
   `-Ddart.vm.product=true` beim Kernel — kDebugMode wird falsch,
   Debug-Pfade fallen aus dem AOT. Standard fuer fremde Apps. NICHT fuer
   Apps mit media_kit auf Horizon (dessen NativeReferenceHolder-Pfad lebt
-  vom wahren kDebugMode — Referenz-App!).
+  vom wahren kDebugMode!).
 
 Typische App-seitige Restarbeit bei ARCHIVIERTEN Projekten ist reine
 Flutter-Versions-Migration (waere auf jedem Desktop genauso faellig):

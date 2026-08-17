@@ -200,7 +200,7 @@ bool PathIsDirectory(const std::string& path) {
 
 // --- Virtuelle Dateihandles -------------------------------------------------
 //
-// Fund vom 2026-08-15 (Referenz-App/Hive): Der Dateidienst haelt offene Dateien
+// Fund vom 2026-08-15 (Hive-Datenbank der Referenz-App): Der Dateidienst haelt offene Dateien
 // EXKLUSIV - ein zweites open() auf denselben Pfad scheitert mit EIO.
 // Hive oeffnet jede Box doppelt (ein Lese-, ein Schreib-Handle mit eigener
 // Position), sqlite oeffnet Journal neben Datenbank, und jede weitere
